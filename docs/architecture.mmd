@@ -1,0 +1,9 @@
+graph TD
+    A[GitHub Webhooks] -->|Push/Review Event| B(AWS Lambda)
+    B --> C{Stage 0: Deterministic Rules}
+    C -->|Bypass/Fast-fail| F[GitHub PR Check Runs API]
+    C -->|Requires Deep Inspection| D{Stage 1: Git Diff Parsing}
+    D -->|Trivial/Formatting| F
+    D -->|Substantive Change| E{Stage 2: Bedrock Nova Pro Evaluation}
+    E -->|Analyze Semantic Impact| F
+    F -.->|Preserve or Dismiss Approval| A

@@ -1,0 +1,22 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: npm run test:adversarial     # zero-false-preserve gate — blocks merge on failure
+  prompt-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # If the control-logic prompt changed, require the eval label + full suite.
+      - run: |
+          if git diff --name-only origin/main...HEAD | grep -q 'src/model/prompt.ts'; then
+            echo "::warning::prompt.ts (control logic) changed — eval + adversarial suite must pass and security must review";
+          fi

@@ -1,0 +1,25 @@
+{
+  "name": "approval-freshness-engine",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Fail-closed, policy-based PR approval staleness engine. Never approves — only dismisses or no-ops.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:adversarial": "vitest run test/adversarial",
+    "eval": "ts-node eval/run.ts",
+    "p0": "ts-node scripts/p0_backfill.ts",
+    "lint": "eslint src test"
+  },
+  "dependencies": {
+    "@octokit/rest": "^21.0.0",
+    "minimatch": "^10.0.0",
+    "prom-client": "^15.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0",
+    "@types/node": "^20.0.0"
+  }
+}

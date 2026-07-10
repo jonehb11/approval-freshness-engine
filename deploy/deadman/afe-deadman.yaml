@@ -1,0 +1,48 @@
+# Lives in a locked-down ops repo (NOT the engine repo). Runs on GitHub's infrastructure so it
+# cannot die with the engine. Reverts enrolled repos to native config if the engine is unhealthy.
+name: afe-deadman-switch
+on:
+  schedule:
+    - cron: "*/10 * * * *"     # note: GitHub cron drifts under load; budget ~25m worst case
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  canary-and-revert:
+    runs-on: ubuntu-latest
+    environment: afe-deadman    # protects the org-ruleset-write credential
+    steps:
+      - name: Probe canary
+        id: probe
+        env:
+          GH_TOKEN: ${{ secrets.CANARY_TOKEN }}      # low-priv: push to canary repo only
+          CANARY_REPO: ${{ vars.CANARY_REPO }}
+          CANARY_PR: ${{ vars.CANARY_PR }}
+          SLA_MIN: "10"
+        run: ./scripts/probe_canary.sh               # pushes trivial commit, polls for the check on new SHA
+
+      - name: Load prior failure count
+        id: state
+        run: echo "fails=$(gh variable get AFE_CANARY_FAILS 2>/dev/null || echo 0)" >> "$GITHUB_OUTPUT"
+        env: { GH_TOKEN: ${{ secrets.OPS_TOKEN }} }
+
+      - name: On canary failure — increment; revert on 2nd consecutive
+        if: steps.probe.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.RULESET_ADMIN_TOKEN }}   # org-ruleset-write; only restores STRICTER native control
+          ORG: ${{ vars.ORG }}
+        run: |
+          FAILS=$(( ${{ steps.state.outputs.fails }} + 1 ))
+          gh variable set AFE_CANARY_FAILS --body "$FAILS"
+          if [ "$FAILS" -ge 2 ]; then
+            echo "::warning::Engine unhealthy x$FAILS — reverting enrolled repos to NATIVE config"
+            ./scripts/revert_to_native.sh "$ORG"        # atomic ruleset PATCH: native dismiss ON + required check REMOVED
+            ./scripts/page_oncall.sh "AFE reverted to native; engine down"
+            ./scripts/open_incident.sh
+          fi
+
+      - name: On canary success — reset counter (never auto re-enroll)
+        if: steps.probe.outcome == 'success'
+        run: gh variable set AFE_CANARY_FAILS --body "0"
+        env: { GH_TOKEN: ${{ secrets.OPS_TOKEN }} }
+      # NOTE: re-enrollment after a revert is a SEPARATE, human-approved workflow_dispatch. Never here.

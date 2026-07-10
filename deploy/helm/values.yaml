@@ -1,0 +1,24 @@
+replicaCount: 2
+image:
+  repository: ghcr.io/ORG/approval-freshness-engine
+  tag: ""          # pin at deploy
+serviceAccount:
+  name: afe        # Pod Identity → afe-role (Bedrock + Secrets Manager read)
+ingress:
+  enabled: true
+  host: afe.internal.example.com
+  path: /webhook
+env:
+  MODE: shadow                 # shadow → deterministic-live → full, per rollout phase
+  MODEL_PROVIDER: bedrock      # or anthropic
+  MODEL_ID: ""
+externalSecrets:
+  githubApp: afe-github-app     # app_id, private_key, webhook_secret from Secrets Manager
+config:
+  denylistConfigMap: afe-denylist
+observability:
+  logsTenant: audit
+  metricsEnabled: true
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits:   { cpu: 500m, memory: 512Mi }

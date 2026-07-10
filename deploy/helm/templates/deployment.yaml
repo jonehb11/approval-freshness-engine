@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector: { matchLabels: { app: {{ .Release.Name }} } }
+  template:
+    metadata: { labels: { app: {{ .Release.Name }} } }
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      containers:
+        - name: engine
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          ports: [{ containerPort: 3000 }]
+          env:
+            - { name: MODE, value: "{{ .Values.env.MODE }}" }
+            - { name: MODEL_PROVIDER, value: "{{ .Values.env.MODEL_PROVIDER }}" }
+            - { name: MODEL_ID, value: "{{ .Values.env.MODEL_ID }}" }
+          envFrom:
+            - secretRef: { name: {{ .Values.externalSecrets.githubApp }} }
+          volumeMounts:
+            - { name: config, mountPath: /etc/afe }
+          readinessProbe: { httpGet: { path: /healthz, port: 3000 } }
+      volumes:
+        - name: config
+          configMap: { name: {{ .Values.config.denylistConfigMap }} }
