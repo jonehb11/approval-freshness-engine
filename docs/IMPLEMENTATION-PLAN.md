@@ -131,13 +131,20 @@ This is enforced by a **three-tier degradation ladder**, each tier independent o
 
 **Direction of every failure, stated for the security review:** every degradation path lands on **dismiss-and-require-human-re-review (= the current control)** or on **native blanket dismissal (= the current control)**. No path lands on "merge without re-review" (fail-open) and no path lands on "merge frozen on bot health" (self-inflicted outage). The failure mode of this system is *the status quo returns.*
 
-### 4.4 Model isolation
+### 4.4 Peer Override (Zero-Outage Escape Hatch)
+If the engine crashes, the required check `approval-freshness/evaluated` remains `pending`, keeping the repo safe but blocking merges. To prevent developer outages without requiring admin intervention, the system provides a decentralized, peer-driven escape hatch via a reusable GitHub Action.
+- **The Mechanism:** A developer blocked by an outage pings a peer. The peer reviews the code and comments `/override-freshness` on the PR.
+- **The Validation:** A GitHub Action (running on GitHub's highly-available infra) intercepts the comment. It verifies the commenter is an authorized engineer and explicitly **rejects the override if the commenter is the PR author**.
+- **The Resolution:** If valid, the Action API-forces the `approval-freshness/evaluated` check to `success`.
+- **Security Posture:** Mathematically guarantees a second human review during an outage, preventing self-bypass while eliminating the need for 2AM pages to admins. Enrolled repos inherit this by invoking the central `peer-override-reusable.yaml`.
+
+### 4.5 Model isolation
 The model has: no tools, no function calling, no network, no credentials, no memory across calls. It receives text, returns JSON. Its output cannot act — it's consumed by deterministic gate code. Prompt-injection in the diff can at most produce a `low` verdict, which the corroboration gate can veto and which can only ever *preserve* an already-human-approved, denylist-cleared, size-limited, pattern-clean change.
 
-### 4.5 Dismissal-authority hardening
+### 4.6 Dismissal-authority hardening
 On enrolled repos, GitHub's ruleset "restrict who can dismiss reviews" → {this App, repo admins}. Prevents a random write-access user from dismissing/gaming reviews outside the engine.
 
-### 4.6 Audit integrity
+### 4.7 Audit integrity
 Every decision emits an immutable structured event to the Loki audit tenant (6-year retention, WORM-backed per the observability design). Events are append-only; the engine has no delete path. Fields in §src/audit.
 
 ---

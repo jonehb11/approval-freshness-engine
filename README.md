@@ -14,6 +14,20 @@ Worst-case malfunction ≡ today's behavior or a blocked merge. Enforced by `tes
 2. **Stage 1 — semantic diff (deterministic, difftastic):** AST-identical / trivial-class / merge-base-only → preserve. No AI.
 3. **Stage 2 — AI classifier (advisory):** low-impact + all deterministic corroboration gates pass → preserve; anything else → dismiss.
 
+## End-to-End Flow & Fail-Safe Mechanics
+
+To make this engine work, **GitHub's native "Dismiss stale pull request approvals" setting must be turned OFF** in enrolled repositories. The engine takes over that responsibility. Here is how it operates securely:
+
+1. **The Block:** A developer pushes a new commit to an approved PR. Because native dismissal is off, the approval remains. However, GitHub immediately requires a new `success` status for the `approval-freshness/evaluated` check. The PR is instantly blocked from merging.
+2. **The Evaluation:** The engine analyzes the diff through the 3-stage ladder.
+    - If the change is substantive or dangerous, the engine uses the API to manually dismiss the approval, sets the check to `failure`, and demands a re-review.
+    - If the change is trivial (e.g., formatting), the engine leaves the approval untouched and sets the check to `success`, allowing the merge.
+3. **Fail-Safe 1: Peer Override (Zero-Outage Escape Hatch)**
+    If the engine completely crashes, the PR remains safely blocked in `pending` status. To prevent a developer outage, any peer engineer can review the code and comment `/override-freshness`. A highly-available GitHub Action verifies the commenter is authorized (and explicitly **not** the PR author) and forces the check to `success`.
+4. **Fail-Safe 2: Dead-Man Switch & Safety Sweep**
+    If the engine is dead for more than 6 minutes (checked via a 3-minute cron canary), a separate GitHub Action automatically takes over.
+    - **Safety Sweep:** It queries for any PRs updated during the downtime that are stuck in `pending`, and manually dismisses their approvals via API.
+    - **Revert to Native:** It then automatically patches the repository ruleset to turn the native "Dismiss stale approvals" setting back **ON** and removes the engine's required check. The organization seamlessly returns to today's native behavior without blocking developers.
 ## Layout
 - `src/stages/` — the ladder (0/1/2) + orchestrator
 - `src/github/` — App auth, PR/delta resolution, the sole actuator (no approve path)
