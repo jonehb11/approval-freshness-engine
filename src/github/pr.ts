@@ -69,7 +69,6 @@ export async function buildDelta(
   }
 
   return {
-    octokit, owner, repo,
     approvedSha, headSha,
     changedFiles: files.map((f) => f.filename),
     addedLines: files.reduce((n, f) => n + (f.additions ?? 0), 0),
