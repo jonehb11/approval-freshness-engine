@@ -1,41 +1,9 @@
 graph TD
-    subgraph GitHub
-        PR[Pull Request]
-        Ruleset[Branch Protection Ruleset<br>Native Dismiss: OFF]
-        Push[Developer Pushes Commit]
-        Push -->|Changes SHA| PR
-        PR -->|1. Missing Check Blocks Merge| MergeBlocked[Merge Button Disabled]
-    end
-
-    subgraph Approval Freshness Engine
-        Webhook[Webhook Receiver / Lambda]
-        Push -->|2. pull_request.synchronize| Webhook
-        
-        S0{Stage 0: Hard Rules<br>Denylist/Canary}
-        S1{Stage 1: Difftastic<br>Semantic Diff}
-        S2{Stage 2: AI Classifier<br>Bedrock Nova Pro}
-        
-        Webhook --> S0
-        S0 -->|Hit| ActionDismiss[DISMISS]
-        S0 -->|Clean| S1
-        
-        S1 -->|AST Identical / Trivial| ActionPreserve[PRESERVE]
-        S1 -->|Structural Change| S2
-        
-        S2 -->|High Impact / Low Conf| ActionDismiss
-        S2 -->|Low Impact & High Conf| ActionPreserve
-        
-        ActionDismiss -->|3a. API: Dismiss Review, Check=Fail| PR
-        ActionPreserve -->|3b. API: Keep Approval, Check=Success| PR
-    end
-
-    subgraph Escapes [Fail-Safe Escapes]
-        Comment[Peer Comments /override-freshness]
-        Comment -->|Action Checks Author| GHA[Peer Override GHA]
-        GHA -->|If Valid Peer, API: Check=Success| PR
-        
-        DeadMan[Dead-Man Switch GHA<br>Runs every 3 mins]
-        DeadMan -.->|Canary Fails Twice| Ruleset
-        DeadMan -.->|API: Dismiss pending PRs| PR
-        Ruleset -.->|Reverts to Native Dismiss ON| PR
-    end
+    A[GitHub Webhook Payload] -->|Push/Review Event| B(Approval Freshness Engine<br>EKS / Docker)
+    B --> C{Stage 0: Hard Rules}
+    C -->|Bypass/Fast-Fail| F[Actuator: GitHub API]
+    C -->|Requires Deep Inspection| D{Stage 1: Difftastic AST}
+    D -->|Trivial/Formatting| F
+    D -->|Substantive Semantic Change| E{Stage 2: Bedrock Nova Pro AI}
+    E -->|Analyze Semantic Impact| F
+    F -.->|Preserve or Dismiss Approval| A
