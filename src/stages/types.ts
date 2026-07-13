@@ -21,7 +21,8 @@ export type ReasonCode =
   | "corroboration_gate_failed"
   | "model_error"
   | "unresolved_approved_sha"
-  | "unsupported_language_fallthrough";
+  | "unsupported_language_fallthrough"
+  | "stage2_unexpected_error";
 
 export interface Decision {
   action: Action;
@@ -44,8 +45,31 @@ export interface Delta {
   patchByFile: Record<string, string>; // unified diff text per file (for difftastic + model)
 }
 
+/**
+ * Creates a DISMISS decision.
+ * Fail-Closed Invariant: This is the default, safe fallback action. By creating a DISMISS,
+ * the system requires a human re-review, ensuring no unverified code is merged.
+ *
+ * @param stage - The stage number (0, 1, or 2) making the decision.
+ * @param reason - The specific reason code for dismissal.
+ * @param detail - A human-readable explanation of the dismissal.
+ * @param evidence - Optional JSON-serializable evidence for the audit log.
+ * @returns A decision object representing a DISMISS action.
+ */
 export const dismiss = (stage: 0 | 1 | 2, reason: ReasonCode, detail: string, evidence?: Record<string, unknown>): Decision =>
   ({ action: Action.DISMISS, stage, reason, detail, evidence });
 
+/**
+ * Creates a PRESERVE decision.
+ * Fail-Closed Invariant: This is only permitted when rigorous, deterministic proofs
+ * or multi-gated AI corroboration conclusively show the change is safe. If any doubt exists,
+ * the system must call dismiss() instead.
+ *
+ * @param stage - The stage number (0, 1, or 2) making the decision.
+ * @param reason - The specific reason code for preservation.
+ * @param detail - A human-readable explanation of the preservation.
+ * @param evidence - Optional JSON-serializable evidence for the audit log.
+ * @returns A decision object representing a PRESERVE action.
+ */
 export const preserve = (stage: 0 | 1 | 2, reason: ReasonCode, detail: string, evidence?: Record<string, unknown>): Decision =>
   ({ action: Action.PRESERVE, stage, reason, detail, evidence });

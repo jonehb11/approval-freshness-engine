@@ -55,7 +55,7 @@ To deploy and use the Approval Freshness Engine for your own projects:
 1. **Fork this repository:** Fork the repo to your own GitHub organization or user account.
 2. **Implement the Stubs:** In `src/`, complete the stubs for `loadConfig()`, blob materialization, and your specific model provider wiring (e.g., OpenAI, Anthropic, GCP).
 3. **Configure a GitHub App:** Create a new GitHub App with PR read/write (or relevant) permissions in your organization. Supply these credentials to the engine.
-4. **Deploy:** Use the provided `deploy/` directory to deploy the engine via Helm or Terraform to your infrastructure.
+4. **Deploy:** Use the provided `deploy/` directory to deploy the engine via Helm or Terraform. The engine is built to run on an EKS shared cluster using Docker, rather than AWS Lambda, explaining the benefits of zero cold starts for difftastic and persistent memory for rate limiting.
 5. **Monitor:** Connect the `src/audit/` output to your observability stack (e.g., Loki) to monitor decisions and fallback rates.
 
 ## Build honesty

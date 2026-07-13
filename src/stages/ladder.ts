@@ -4,7 +4,16 @@ import { stage0 } from "./stage0_hardrules.js";
 import { stage1 } from "./stage1_difftastic.js";
 import { stage2 } from "./stage2_classifier.js";
 
-// Orchestrates the fail-closed ladder. Any thrown error anywhere → DISMISS (fail closed).
+/**
+ * Orchestrates the fail-closed ladder. Any thrown error anywhere → DISMISS (fail closed).
+ * Fail-Closed Invariant: Any thrown error anywhere in the ladder (stages, model, parsing)
+ * is caught here and converted into a DISMISS decision. This guarantees that an unknown
+ * or error state never results in an approval preservation.
+ *
+ * @param delta - The semantic delta between the approved and current state.
+ * @param cfg - The runtime engine configuration.
+ * @returns A promise that resolves to a terminal Decision (DISMISS or PRESERVE).
+ */
 export async function evaluate(delta: Delta, cfg: EngineConfig): Promise<Decision> {
   try {
     if (!delta.approvedSha) {

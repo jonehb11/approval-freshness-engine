@@ -3,6 +3,15 @@ import { PROMPT_VERSION } from "../model/prompt.js";
 
 // Immutable, append-only structured audit event → stdout (scraped to Loki audit tenant,
 // 6-year retention). No delete path exists anywhere in the engine.
+/**
+ * Logs a structured audit event to stdout for ingestion.
+ * Fail-Closed Invariant: Audit logging occurs before any GitHub side-effects. This ensures
+ * that a record of the decision is immutably written even if downstream actuation fails,
+ * providing transparency into all engine actions.
+ *
+ * @param decision - The final Decision made by the engine.
+ * @param ctx - The metadata and context of the actuation.
+ */
 export async function auditDecision(decision: Decision, ctx: {
   owner: string; repo: string; prNumber: number; headSha: string;
   reviewIds: number[]; approverLogins: string[]; dryRun: boolean;

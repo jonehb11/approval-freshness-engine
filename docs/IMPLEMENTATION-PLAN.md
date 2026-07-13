@@ -33,7 +33,7 @@ GitHub (enrolled repos)
 [Audit] structured event → Loki (audit tenant) + metrics → Mimir
 ```
 
-**Runtime shape:** stateless container (Node 20 / TypeScript). Horizontal scale by replica. Queue = in-memory per-instance for P0, then SQS/Redis for HA (§9). No database required — GitHub is the state store; the engine is a pure function of PR state at a head SHA. Optional short-TTL cache (idempotency + rate-limit friendliness).
+**Runtime shape:** stateless Docker container (Node 20 / TypeScript) deployed to an EKS shared cluster. We explicitly avoid AWS Lambda to eliminate cold starts (which are particularly painful when booting the difftastic Rust binary) and to allow persistent in-memory rate limiting and caching. Horizontal scale by replica. Queue = in-memory per-instance for P0, then SQS/Redis for HA (§9). No database required — GitHub is the state store; the engine is a pure function of PR state at a head SHA. Optional short-TTL cache (idempotency + rate-limit friendliness).
 
 **Why TypeScript:** Probot/Octokit are first-class in TS; the webhook + App-auth + check-run surface is best-documented there; and the whole thing is I/O-bound glue, not compute. (Go is a fine alternative if the org standardizes there; the design is language-neutral.)
 

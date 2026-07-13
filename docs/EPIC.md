@@ -147,7 +147,7 @@ Push to an approved PR ──► emit `approval-freshness/evaluated` = pending (
 ## 6. Implementation detail
 
 ### 6.1 Components
-- **GitHub App** (Node/TS or Python) — receives `synchronize` webhooks, orchestrates the ladder, calls the dismiss + check + comment APIs. Stateless; idempotent per (PR, head SHA).
+- **GitHub App** (Node/TS or Python in Docker on EKS) — receives `synchronize` webhooks, orchestrates the ladder, calls the dismiss + check + comment APIs. Built for an EKS shared cluster (rather than AWS Lambda) to provide zero cold starts for difftastic and persistent memory for rate limiting. Stateless; idempotent per (PR, head SHA).
 - **Stage 0 evaluator** — pure function over the file list + commit metadata + push metadata. Denylist in version-controlled YAML co-owned by security. Zero external calls.
 - **Stage 1 evaluator** — invokes **difftastic** on `git diff <approved_sha>..<head_sha>`; classifies AST-identical / trivial-class / merge-base-only. Unsupported languages → not-trivial (fail-closed).
 - **Stage 2 classifier** — single Claude API call, structured output (JSON schema, no tools, no loop — a *workflow*, not an agent). Rubric-in-prompt versioned in Git; **prompt changes go through PR review like code, because the prompt is control logic.** System prompt cacheable; data (the delta) passed as clearly delimited untrusted content.

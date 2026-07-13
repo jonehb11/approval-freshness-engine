@@ -23,6 +23,14 @@ export interface EngineConfig {
   };
 }
 
+/**
+ * Loads the runtime configuration.
+ * Fail-Closed Invariant: If the configuration cannot be loaded, parsed, or defaults cannot be satisfied,
+ * this function must throw an error. This exception will be caught by the orchestrator (ladder.ts)
+ * to guarantee a fail-closed (DISMISS) outcome.
+ *
+ * @returns A promise that resolves to the EngineConfig.
+ */
 export async function loadConfig(): Promise<EngineConfig> {
   // Real impl: read denylist.yaml + defaults, wire the model provider (Bedrock/Anthropic).
   // Kept as a typed stub so the tree compiles and tests inject testConfig().
