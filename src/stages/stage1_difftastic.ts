@@ -141,15 +141,56 @@ function isTrivialClass(file: string, delta: Delta, cfg: EngineConfig): boolean 
   return false;
 }
 
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { randomBytes } from "node:crypto";
+
 /**
  * Materializes blobs for difftastic to compare.
  * Fail-Closed Invariant: If blobs cannot be fetched or written (e.g., API errors, missing refs),
  * this function throws an error, triggering the orchestrator's master fail-closed mechanism.
  *
- * @param _file - The file to fetch.
- * @param _delta - The change context.
+ * @param file - The file to fetch.
+ * @param delta - The change context.
  * @returns An object containing paths to the materialized temp files.
  */
-async function materializeBlobs(_file: string, _delta: Delta): Promise<{ path: string; head: string }> {
-  throw new Error("materializeBlobs must be wired to github/pr.ts blob fetch");
+async function materializeBlobs(file: string, delta: Delta): Promise<{ path: string; head: string }> {
+  if (!delta.octokit || !delta.owner || !delta.repo) {
+    throw new Error("materializeBlobs requires octokit, owner, and repo on Delta");
+  }
+
+  const fetchBlob = async (ref: string) => {
+    try {
+      const resp = await delta.octokit!.repos.getContent({
+        owner: delta.owner!,
+        repo: delta.repo!,
+        path: file,
+        ref: ref,
+      });
+      if (Array.isArray(resp.data) || resp.data.type !== "file") {
+        return ""; // Not a file or missing
+      }
+      return Buffer.from(resp.data.content, "base64").toString("utf-8");
+    } catch (e: any) {
+      if (e.status === 404) return ""; // File might be newly created or deleted
+      throw e;
+    }
+  };
+
+  const [approvedContent, headContent] = await Promise.all([
+    fetchBlob(delta.approvedSha),
+    fetchBlob(delta.headSha)
+  ]);
+
+  const prefix = randomBytes(8).toString("hex");
+  const approvedPath = join(tmpdir(), `${prefix}_approved_${file.replace(/\\W+/g, "_")}`);
+  const headPath = join(tmpdir(), `${prefix}_head_${file.replace(/\\W+/g, "_")}`);
+
+  await Promise.all([
+    writeFile(approvedPath, approvedContent, "utf8"),
+    writeFile(headPath, headContent, "utf8")
+  ]);
+
+  return { path: approvedPath, head: headPath };
 }

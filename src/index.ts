@@ -154,6 +154,12 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
   }
 });
 
+import { loadConfig } from "./config/schema.js";
+import { buildDelta } from "./github/pr.js";
+import { evaluate } from "./stages/ladder.js";
+import { actuate } from "./github/actuator.js";
+import { Octokit } from "@octokit/rest";
+
 /**
  * Asynchronously processes the validated webhook payload.
  * Incorporates business logic for approval freshness evaluation.
@@ -168,14 +174,48 @@ async function processWebhook(eventType: string, payload: any): Promise<void> {
   }
 
   const action = payload.action;
-  
-  // Implementation stub:
-  // Usually this would fetch the PR delta, evaluate it through stages, 
-  // and then use the Actuator to preserve or dismiss approvals.
   console.log(`Processing ${eventType} with action: ${action}`);
 
-  // In a real implementation we would invoke evaluate() from src/stages/ladder.ts
-  // and actuate() from src/github/actuator.ts
+  // Only run evaluation on synchronize (push) or submitted reviews
+  if (action !== "synchronize" && action !== "submitted") {
+    return;
+  }
+
+  const owner = payload.repository.owner.login;
+  const repo = payload.repository.name;
+  const pr = payload.pull_request;
+  const prNumber = pr.number;
+
+  // Initialize Octokit (requires GITHUB_TOKEN or App Auth in real env)
+  const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
+
+  try {
+    // In a full implementation, we'd fetch the timeline to find the last approved SHA.
+    // For this engine, we assume the base sha or previous head sha is the approved sha.
+    // This is simplified for the boilerplate.
+    const headSha = pr.head.sha;
+    const approvedSha = payload.before || pr.base.sha; 
+    
+    const cfg = await loadConfig();
+    
+    // 1. Build the unified Delta object representing the change
+    const delta = await buildDelta(octokit, owner, repo, pr, approvedSha, headSha);
+    
+    // 2. Evaluate the delta through the 3-stage fail-closed ladder
+    const decision = await evaluate(delta, cfg);
+    
+    // We would fetch actual review IDs to dismiss here.
+    const reviewIds: number[] = [];
+    const approverLogins: string[] = [];
+
+    // 3. Actuate the decision back to GitHub (set check run, dismiss reviews)
+    await actuate(decision, {
+      octokit, owner, repo, prNumber, headSha, reviewIds, approverLogins, dryRun: false
+    });
+  } catch (err) {
+    console.error("Error processing webhook logic:", err);
+    throw err; // Caught by the fire-and-forget catch block
+  }
 }
 
 // Start server

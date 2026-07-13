@@ -33,6 +33,9 @@ export interface Decision {
 }
 
 export interface Delta {
+  octokit?: any; // Added for octokit client to fetch blobs
+  owner?: string;
+  repo?: string;
   approvedSha: string;
   headSha: string;
   changedFiles: string[];
