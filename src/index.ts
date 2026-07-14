@@ -1,7 +1,10 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { Octokit } from "@octokit/rest";
 import { verifyWebhookSignature } from "./github/auth.js";
 import { auditDecision } from "./audit/logger.js";
 import { Action } from "./stages/types.js";
+import { handleFreshApproval } from "./github/freshApproval.js";
+import { setCheckPending } from "./github/actuator.js";
 
 // Security: Global unhandled rejection handler.
 // By default, modern Node.js versions crash on unhandled promise rejections,
@@ -168,12 +171,61 @@ async function processWebhook(eventType: string, payload: any): Promise<void> {
   }
 
   const action = payload.action;
-  
-  // Implementation stub:
-  // Usually this would fetch the PR delta, evaluate it through stages, 
-  // and then use the Actuator to preserve or dismiss approvals.
   console.log(`Processing ${eventType} with action: ${action}`);
 
+  // pull_request_review "submitted" is the fresh-approval echo's ONLY trigger (see
+  // src/github/freshApproval.ts for the full precondition table):
+  // a platform-verified human approval on the exact current head SHA is the re-review the
+  // required check exists to gate on. This is wired for real (not a stub) because it is the
+  // engine's primary unblock path now that there is no dead-man switch or ruleset-write
+  // credential anywhere in the system — see README.md "End-to-End Flow & Fail-Safe Mechanics".
+  if (eventType === "pull_request_review" && action === "submitted") {
+    const owner = payload?.repository?.owner?.login;
+    const repo = payload?.repository?.name;
+    if (!owner || !repo) {
+      // Malformed/unexpected payload shape: fail closed by no-op'ing rather than throwing
+      // partway through GitHub API calls with undefined coordinates.
+      console.error("pull_request_review payload missing repository owner/name; skipping.");
+      return;
+    }
+
+    // Real deployment authenticates as the GitHub App installation (integration_id pinning,
+    // F2, requires this exact App identity — no other credential can satisfy the required
+    // check). GITHUB_TOKEN here is an installation/app token minted by the deploy environment;
+    // src/github/auth.ts currently only covers webhook signature verification, so token
+    // minting is intentionally left to the deploy-time wiring, consistent with this repo's
+    // "Build honesty" stance on what is and isn't implemented yet (see loadConfig()).
+    const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
+
+    await handleFreshApproval(payload, {
+      octokit, owner, repo,
+      dryRun: process.env.DRY_RUN === "true",
+    });
+    return;
+  }
+
+  // On push receipt (pull_request "synchronize"), immediately mark the check in_progress on
+  // the new head SHA. This is UX-only, not a safety mechanism (a new SHA never inherits a
+  // prior SHA's success — required checks match per head SHA — and in_progress is itself a
+  // non-passing state either way) — it tells
+  // developers "the engine saw your push and is evaluating" instead of an opaque missing check.
+  if (eventType === "pull_request" && action === "synchronize") {
+    const owner = payload?.repository?.owner?.login;
+    const repo = payload?.repository?.name;
+    const headSha = payload?.pull_request?.head?.sha;
+    if (!owner || !repo || typeof headSha !== "string" || headSha === "") {
+      console.error("pull_request synchronize payload missing repository/head coordinates; skipping.");
+      return;
+    }
+    const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
+    await setCheckPending({ octokit, owner, repo, headSha, dryRun: process.env.DRY_RUN === "true" });
+    // Fall through intentionally ends here for now: the delta evaluation itself is the
+    // implementation stub below (ladder + actuator wiring at deploy time).
+  }
+
+  // Implementation stub for all other pull_request / pull_request_review actions:
+  // Usually this would fetch the PR delta, evaluate it through stages,
+  // and then use the Actuator to preserve or dismiss approvals.
   // In a real implementation we would invoke evaluate() from src/stages/ladder.ts
   // and actuate() from src/github/actuator.ts
 }

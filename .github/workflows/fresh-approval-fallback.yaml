@@ -1,0 +1,174 @@
+# =============================================================================
+# Fresh Approval Fallback — redundant liveness path for the approval-freshness
+# check, running entirely on GitHub's infrastructure.
+#
+# WHY THIS EXISTS
+# The ONLY merge gate for enrolled repos is the org ruleset's required status
+# check `approval-freshness/evaluated`, pinned by `integration_id` to the
+# approval-freshness engine's GitHub App (see deploy/rulesets/). That pin means
+# a check with the right name from any *other* identity — including the
+# built-in github-actions bot — is rejected by GitHub as "not set by the
+# expected GitHub App". So if the engine pod is down, the only entity able to
+# ever satisfy the check is the engine's own App identity. This workflow lets
+# that identity be exercised from Actions infra too, so a genuine fresh human
+# approval on the exact current head SHA can unblock a PR even while the
+# engine is unreachable — without waiting for the engine, and without anyone
+# needing break-glass access to the ruleset itself.
+#
+# This workflow does NOT implement any judgment. It is a deterministic echo:
+# GitHub itself has already verified (a) the reviewer is not the PR author
+# (platform-enforced) and (b) `review.commit_id` is the exact SHA reviewed.
+# All this workflow does is copy that platform-verified fact onto the required
+# check, exactly like the engine's primary path (src/github/freshApproval.ts)
+# does. It can only ever write `success`. It has no code path that writes
+# `failure`, dismisses a review, requests reviewers, approves, merges, or
+# pushes — that authority stays with the primary engine.
+#
+# SECURITY TRADE-OFF — KEY CUSTODY (read before enabling this workflow)
+# Authenticating as the engine's GitHub App from Actions requires a copy of
+# the App's private key in org Actions secrets (AFE_APP_PRIVATE_KEY). That is
+# a SECOND custody point for the check-writing credential, in addition to the
+# copy the engine's own runtime holds (deploy/helm: externalSecrets.githubApp).
+# This is a deliberate, documented trade-off, not an oversight:
+#   - Mitigation 1: the secret is an ORG secret scoped only to repos enrolled
+#     in approval-freshness (Settings > Secrets > Actions > repository access),
+#     never "all repos".
+#   - Mitigation 2: this workflow is fully deterministic — its only inputs are
+#     the platform-verified `pull_request_review` event and a fresh API
+#     re-fetch of the same PR. There are no free-form inputs, no
+#     workflow_dispatch, no way to make it do anything other than echo a real
+#     approval onto its own head SHA.
+#   - Mitigation 3: the App has NO approve / merge / push / administration
+#     permission on the repo. Worst case of key theft is: set checks (only
+#     `success`, per this file) and dismiss reviews (a separate code path this
+#     workflow doesn't use). That can only ever BLOCK a merge or unblock it
+#     BEHIND a still-required, still-platform-verified human approval. It can
+#     never remove the ruleset's "≥1 approving review" requirement, and it
+#     cannot touch the ruleset itself (no ruleset-write scope, anywhere).
+#   - Alternative: an org may choose to OMIT this workflow entirely and accept
+#     "engine down ⇒ merges wait for the engine, or an org owner uses ruleset
+#     break-glass" — that is still fail-closed, just lower-liveness. Enabling
+#     this workflow is a liveness/custody trade a security owner should sign
+#     off on explicitly, not a default nobody chose.
+#
+# See deploy/rulesets/README.md for the ruleset side of this design, and the
+# "merge equation" in the top-level README.md for the two ways a check success
+# can ever be earned.
+# =============================================================================
+
+name: Fresh Approval Fallback
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+# Minimal permissions: this workflow never uses the default GITHUB_TOKEN for
+# anything. All GitHub API calls are made with a short-lived token minted for
+# the engine's own GitHub App (see the "Mint engine App token" step), whose
+# permissions are fixed by the App's own installation grant, not by this
+# block. GITHUB_TOKEN itself is never referenced below.
+permissions: {}
+
+# One run per PR at a time: a later review event fully supersedes an earlier
+# one for the purposes of this echo (both, if they qualify, would write the
+# same idempotent `success` for the same head SHA), so it is safe to let a
+# newer run cancel an in-flight older one rather than queue behind it.
+concurrency:
+  group: fresh-approval-fallback-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  echo-fresh-approval:
+    name: Echo fresh approval onto required check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Job-level guard — every condition must hold before we spend a single
+    # API call. This mirrors the pure decision function `evaluateFreshApproval`
+    # in src/github/freshApproval.ts (the primary, in-engine path) so the two
+    # redundant paths agree on what "qualifies" means:
+    #   - review.state == 'approved'            : not commented / changes_requested
+    #   - review.commit_id == pull_request.head.sha : the review is on the
+    #     CURRENT head, not a stale SHA from before a later push (required
+    #     status checks are matched strictly per head SHA — a success on a
+    #     previous SHA never carries over, so an approval on a stale SHA must
+    #     never be echoed as success on the current one)
+    #   - review.user.login != pull_request.user.login : defense in depth;
+    #     GitHub already platform-blocks self-approval, this is belt-and-braces
+    #   - review.user.type != 'Bot' : defense in depth,
+    #     mirroring the equivalent precondition in
+    #     freshApproval.ts — a bot-submitted "approval" is not the fresh human
+    #     re-review this fallback exists to echo
+    if: |
+      github.event.review.state == 'approved' &&
+      github.event.review.commit_id == github.event.pull_request.head.sha &&
+      github.event.review.user.login != github.event.pull_request.user.login &&
+      github.event.review.user.type != 'Bot'
+    steps:
+      # Pinned by full commit SHA, not a mutable tag, per repo policy: a tag
+      # can be moved by the upstream maintainer (accidentally or via supply-
+      # chain compromise) to point at different code that would then run with
+      # access to the App private key. SHA below is the commit `v2` pointed to
+      # at the time this workflow was authored (verified via
+      # `gh api repos/actions/create-github-app-token/git/refs/tags/v2`).
+      # NOTE: upstream `create-github-app-token` has since released v3.x.
+      # This SHA still corresponds to a real, working v2 release; re-verify
+      # and consider re-pinning to a current release SHA at rollout time —
+      # do not bump by just editing the trailing `# v2` comment.
+      - name: Mint engine App token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ vars.AFE_APP_ID }}
+          private-key: ${{ secrets.AFE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      # Race guard: the webhook that triggered this run captured
+      # `review.commit_id` at submission time, but a new push could have
+      # landed on the PR between event delivery and this step running. If the
+      # head has since moved, the review is no longer "on the current head"
+      # and must NOT be echoed as success for a SHA it was never verified
+      # against. Re-fetch the PR from the API (not the event payload, which
+      # is now stale) and compare again before writing anything.
+      - name: Re-verify head SHA has not moved
+        id: verify
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEWED_SHA: ${{ github.event.review.commit_id }}
+        run: |
+          set -euo pipefail
+          CURRENT_HEAD=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha')
+          if [ "${CURRENT_HEAD}" != "${REVIEWED_SHA}" ]; then
+            echo "::notice::Head moved (${REVIEWED_SHA} -> ${CURRENT_HEAD}) between review submission and this run. The review is stale for the current head; exiting without writing a check. The new head SHA is unblocked only by a fresh review against it, exactly as intended."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "current=true" >> "$GITHUB_OUTPUT"
+
+      # Only ever writes `conclusion: success`. Per F5 (neutral/skipped
+      # SATISFY a required check and must never be emitted; and this
+      # fallback's action space excludes `failure` entirely — that stays the
+      # primary engine's job) the conclusion here is a hardcoded literal, not
+      # a variable, so there is no code path in this file that can produce
+      # anything other than "success".
+      - name: Create check run success on the reviewed head SHA
+        if: steps.verify.outputs.current == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.review.commit_id }}
+          REVIEWER: ${{ github.event.review.user.login }}
+        run: |
+          set -euo pipefail
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${REPO}/check-runs" \
+            -f "name=approval-freshness/evaluated" \
+            -f "head_sha=${HEAD_SHA}" \
+            -f "status=completed" \
+            -f "conclusion=success" \
+            -f "output[title]=approval-freshness/evaluated" \
+            -f "output[summary]=Fresh human approval on head ${HEAD_SHA} by @${REVIEWER}, echoed via the fresh-approval-fallback workflow (engine liveness path; see workflow header for the key-custody trade-off this implies)."

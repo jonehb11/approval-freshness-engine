@@ -52,7 +52,7 @@ GitHub (enrolled repos)
 **Explicitly NOT requested:** Administration, Actions write, Workflows, Secrets, Members, org-admin. The App cannot merge, cannot push, cannot alter rulesets, cannot approve.
 
 ### 2.2 Webhook events
-`pull_request` (actions: `synchronize`, `ready_for_review`, `reopened`), `pull_request_review` (to recompute on new approvals), `push` (defense-in-depth for edge cases). Webhook secret verified on every request (§4.1).
+`pull_request` (actions: `synchronize`, `ready_for_review`, `reopened`), `pull_request_review` (action: `submitted` — routes to the fresh-approval echo, §4.4), `push` (defense-in-depth for edge cases). Webhook secret verified on every request (§4.1).
 
 ### 2.3 Installation
 Org-level install, **repository-scoped to enrolled repos only** (never "all repos"). Enrollment = add repo to the App installation + apply the enrollment ruleset (§7).
@@ -113,9 +113,9 @@ HMAC-SHA256 verify `X-Hub-Signature-256` against the webhook secret on every req
 ### 4.2 App auth
 JWT signed with the App private key → installation access token (1h TTL, auto-refreshed), scoped to the installation. Private key in AWS Secrets Manager, pulled via the platform's existing ESO/Pod-Identity path — never in Git, never in env files committed anywhere.
 
-### 4.3 Fail-safe design — degrade to the status quo, never to a merge freeze
+### 4.3 Fail-safe design — the ruleset IS the fail-safe
 
-**Design principle (corrected):** "fail-closed" here means **fall back to GitHub's native behavior (blanket dismiss-stale)** — the org's *current* control — NOT "block every merge until an engineer fixes the bot." A design where merges are hostage to the engine's uptime is a worse failure mode than the status quo and is explicitly rejected. The safe fallback is *today's behavior*, reached automatically, with no human in the loop.
+**Design principle (corrected, and corrected again):** there is no separate "fail-safe mechanism" distinct from normal operation. The merge gate is GitHub's own ruleset enforcement — static, org-owned, never edited at runtime by any automation (§7.1) — and it fails closed *by construction*: required status checks are matched strictly per head SHA (a success on a previous commit never carries over), so a missing/pending/failed check on the current head blocks merge unconditionally, with no engine involvement required to produce that blocking. The engine's only job is to try to make the check say `success`. When it can't — because it's down, because the model is degraded, because the change is genuinely substantive — the ruleset does exactly what it would do for a dead CI job: block. That is not a special failure mode; it is the default state every push starts in.
 
 This is enforced by a **three-tier degradation ladder**, each tier independent of the one above it so a failure can't take its own fallback down with it:
 
@@ -123,20 +123,21 @@ This is enforced by a **three-tier degradation ladder**, each tier independent o
 
 **Tier 2 — Model degraded, engine up (circuit breaker).** If the model provider errors/times out repeatedly, the engine trips a circuit breaker into **deterministic-only mode**: Stage 0 and Stage 1 still run, so the largest and safest buckets (whitespace/formatting/comment-only, merge-base-only, trivial-class) are *still preserved* with zero re-review noise. Anything that would have needed Stage 2 falls back to **dismiss** (native-equivalent: stale approval dismissed → human re-review). Most of the value survives a model outage.
 
-**Tier 3 — Engine down (dead-man auto-revert).** If the engine is genuinely down (not a blip), an **independent dead-man switch running on GitHub's own infrastructure** — not on our cluster — automatically reverts the enrollment ruleset back to the **native configuration**: native dismiss-stale ON, the required check REMOVED. The org is instantly back to exactly today's behavior, org-wide, with nobody paged to unblock developers. See §7.2 for the mechanism.
+**Tier 3 — Engine down (static-ruleset fail-closed, no auto-revert).** If the engine is genuinely down, nothing reverts, nothing is patched, and no automation touches the ruleset. Every freshly-pushed enrolled PR simply sits on a missing/pending required check — natively blocked, exactly as GitHub would block on any other required check that stopped reporting. Recovery does not depend on the engine coming back: a **fresh human approval submitted on the exact current head SHA** is a platform-verified fact (`review.commit_id == head.sha`, self-approval already blocked by GitHub) that gets echoed to check `success` by a **redundant path that runs on GitHub's own infrastructure**, independent of the engine's uptime — `.github/workflows/fresh-approval-fallback.yaml` (§7.2, §4.4). The org never "returns to native behavior" because it never left the one ruleset it has; it just waits on the same check-required gate a dead CI job would leave in place, with a working, always-available way to satisfy that gate.
 
-**Why the required check does NOT cause a freeze:** the required check `approval-freshness/evaluated` blocks a *freshly-pushed* PR only for the brief window between the push and either (a) the engine's verdict, or (b) the dead-man reverting the ruleset (which removes the required check entirely). The exposure window is bounded by the dead-man threshold (§6.5 `deadmanRevertMinutes`, ~20–25m worst case including GitHub cron drift), after which the check requirement is gone and merges flow under native rules. There is **no state in which merges are blocked indefinitely on the engine's health.**
+**Why the required check does NOT cause a freeze:** the required check `approval-freshness/evaluated` blocks a *freshly-pushed* PR only until something makes it `success` on that exact head SHA — either the engine's verdict, or a fresh human approval on that head being echoed by the fallback workflow. Because the fallback workflow authenticates as the engine's GitHub App and runs on GitHub Actions infra (not our cluster), that path stays available even if the engine's pod is completely dead. There is **no state in which merges are blocked indefinitely on the engine's health** — the exposure is bounded by "how long until a human re-reviews," which is exactly today's re-review latency, not a new failure mode.
 
-**The pending marker + reaper still exist, but their job changed.** The engine still writes `approval-freshness/evaluated = pending` on receipt (so a new SHA never inherits an old SHA's green check). A per-PR reaper still catches individually lost jobs — but its action for a stuck-pending PR is now to **dismiss the stale review AND resolve the check** (i.e., reproduce native behavior for that one PR: stale → re-review required), never to leave it wedged in `pending`. Silence resolves to *today's outcome*, not to a hang.
+**The pending marker + reaper still exist, but their job is about liveness, not safety.** The engine still writes `approval-freshness/evaluated = pending`/`in_progress` on receipt (so a new SHA never inherits an old SHA's green check — required by GitHub's per-head-SHA check matching, not by anything the engine does). A per-PR reaper still catches individually lost jobs — its action for a stuck-pending PR is to **dismiss the stale review AND resolve the check to failure** (i.e., reproduce native behavior for that one PR: stale → re-review required), never to leave it wedged in `pending`. This closes a slow-webhook edge case; it is not load-bearing for security, since a check that never resolves at all *also* blocks merge — silence is already safe, the reaper just keeps it from being silently slow.
 
-**Direction of every failure, stated for the security review:** every degradation path lands on **dismiss-and-require-human-re-review (= the current control)** or on **native blanket dismissal (= the current control)**. No path lands on "merge without re-review" (fail-open) and no path lands on "merge frozen on bot health" (self-inflicted outage). The failure mode of this system is *the status quo returns.*
+**Direction of every failure, stated for the security review:** every degradation path lands on **dismiss-and-require-human-re-review (= the current control)** or on **no success on the current head SHA (= natively blocked, requiring the identical re-review to clear)**. No path lands on "merge without re-review" (fail-open) and no path lands on "merge frozen forever" (there is always a human re-review escape valve). The failure mode of this system is *the same block a missing required check has always produced* — and the same fix: re-review.
 
-### 4.4 Peer Override (Zero-Outage Escape Hatch)
-If the engine crashes, the required check `approval-freshness/evaluated` remains `pending`, keeping the repo safe but blocking merges. To prevent developer outages without requiring admin intervention, the system provides a decentralized, peer-driven escape hatch via a reusable GitHub Action.
-- **The Mechanism:** A developer blocked by an outage pings a peer. The peer reviews the code and comments `/override-freshness` on the PR.
-- **The Validation:** A GitHub Action (running on GitHub's highly-available infra) intercepts the comment. It verifies the commenter is an authorized engineer and explicitly **rejects the override if the commenter is the PR author**.
-- **The Resolution:** If valid, the Action API-forces the `approval-freshness/evaluated` check to `success`.
-- **Security Posture:** Mathematically guarantees a second human review during an outage, preventing self-bypass while eliminating the need for 2AM pages to admins. Enrolled repos inherit this by invoking the central `peer-override-reusable.yaml`.
+### 4.4 Fresh-approval echo (replaces peer override)
+There is no comment-triggered override and no code path that spoofs the check from a different identity — that was the exact hole `integration_id` pinning (F2, §7.1) closes, and the old peer-override Action ran as the `github-actions` identity, which a correctly-pinned ruleset now rejects outright. The escape hatch is instead a **platform-verified fresh human approval**, echoed to a check success by code that makes no judgment calls:
+- **The mechanism:** a developer blocked by an outage (or by a legitimate re-review need) asks a peer — or, if the PR already required a second approver, simply waits for the next reviewer — to review the current head and click **Approve** in GitHub's native UI. Nothing bespoke; this is the same action native GitHub already asks for after a dismissal.
+- **The validation (`src/github/freshApproval.ts`, and identically in `.github/workflows/fresh-approval-fallback.yaml`):** a `pull_request_review` webhook with `action == submitted` qualifies only if **all** hold: `review.state == "approved"` (case-insensitively); `review.commit_id == pull_request.head.sha` (exact string equality — a stale approval on an old SHA does not qualify); `review.user.login != pull_request.user.login` (defense in depth — GitHub already platform-blocks self-approval); `review.user.type != "Bot"`; the PR is open and not a draft. Any failed precondition is a **no-op** — never a `failure` write, since a non-qualifying review isn't evidence the check should flip red.
+- **The resolution:** on qualification, the actuator sets `approval-freshness/evaluated = success` on `review.commit_id`, with an output summary crediting the reviewer and stating this came via a fresh-approval echo, not the ladder.
+- **Why it's implemented twice:** the engine's own handler is the primary path (fastest, fully audited alongside every other decision). The GitHub Actions copy exists purely for the case the engine itself is down — it authenticates as the *same* GitHub App (`actions/create-github-app-token@v2`, app credentials from org secrets) because `integration_id` pinning means only that one identity can ever satisfy the required check. It re-fetches the PR before writing to guard the race where the head moved between the event and the run, and exits without writing if so.
+- **Security posture:** this is not a machine approval — the check is a mechanical restatement of a human act GitHub itself already verified (exact-commit review, non-self, non-bot). No AI, no judgment, no new trust placed anywhere. The trade-off it *does* introduce — a second custody point for the App's private key, in org Actions secrets, for the fallback workflow — is documented prominently in that workflow's header and in SECURITY-REVIEW.md; an org that doesn't want that trade-off can omit the fallback workflow and accept "engine down ⇒ wait for the pod" as still fail-closed.
 
 ### 4.5 Model isolation
 The model has: no tools, no function calling, no network, no credentials, no memory across calls. It receives text, returns JSON. Its output cannot act — it's consumed by deterministic gate code. Prompt-injection in the diff can at most produce a `low` verdict, which the corroboration gate can veto and which can only ever *preserve* an already-human-approved, denylist-cleared, size-limited, pattern-clean change.
@@ -162,7 +163,8 @@ approval-freshness-engine/
 │   │   ├── auth.ts              # App JWT → installation token
 │   │   ├── client.ts            # Octokit wrapper
 │   │   ├── pr.ts                # resolve approved_sha, approvers, files, delta
-│   │   └── actuator.ts          # check-run + dismiss + comment (the ONLY writer)
+│   │   ├── actuator.ts          # check-run + dismiss + comment (the ONLY writer)
+│   │   └── freshApproval.ts     # pure decision fn + handler for the fresh-approval echo (§4.4)
 │   ├── stages/
 │   │   ├── ladder.ts            # orchestrates 0→1→2, short-circuits
 │   │   ├── stage0_hardrules.ts  # pure fn, denylist + hijack + canary
@@ -181,12 +183,16 @@ approval-freshness-engine/
 │   └── p0_backfill.ts          # READ-ONLY historical analysis → "the number"
 ├── deploy/
 │   ├── helm/                    # k8s chart (fits the GitOps component model)
-│   └── terraform/              # App secret, SQS (HA), IAM/Pod-Identity
+│   ├── terraform/               # App secret, SQS (HA), IAM/Pod-Identity
+│   └── rulesets/                # the canonical, static, org-owned ruleset (§7.1) — the actual
+│                                 # merge gate; applied via GitOps, never by runtime automation
 ├── docs/
 │   ├── IMPLEMENTATION-PLAN.md   # this file
 │   ├── RUNBOOK.md
 │   └── SECURITY-REVIEW.md       # one-pager for the meeting
-└── .github/workflows/ci.yaml
+└── .github/workflows/
+    ├── ci.yaml
+    └── fresh-approval-fallback.yaml  # redundant, GitHub-infra-hosted fresh-approval echo (§4.4)
 ```
 
 ---
@@ -247,58 +253,50 @@ soft_max_files          = 5
 hard_max_lines          = 400     # Stage 0 categorical
 hard_max_files          = 20
 model_timeout_ms        = 8000    # single Stage-2 call → dismiss on hang (Tier 1)
-stale_pending_timeout   = 15m     # per-PR reaper: lost job → dismiss + resolve check (native-equiv)
+stale_pending_timeout   = 15m     # per-PR reaper: lost job → dismiss + resolve check (liveness, not safety)
 circuit_break_after     = 5       # consecutive model failures → Tier 2 deterministic-only mode
 circuit_reset_after     = 5m      # cooldown before re-testing the model provider
-deadman_canary_sla_min  = 10      # canary must be evaluated within this window
-deadman_fail_count      = 2       # consecutive canary misses before auto-revert (hysteresis)
-deadman_revert_minutes  = 25      # worst-case detect+revert budget incl. GitHub cron drift
 ```
 
-**Two distinct timeouts — do not conflate:** `model_timeout_ms` (~8s) bounds a *single* Stage-2 API call and fires constantly/harmlessly (that PR dismisses). `stale_pending_timeout` (~15m) and the dead-man thresholds (~25m) answer "how long before we conclude the engine itself is unhealthy and fall back to native," and fire rarely. The first handles a slow model; the second handles a dead engine.
+**`stale_pending_timeout` is a liveness knob, not a safety mechanism.** A stuck-pending check already blocks merge on its own — GitHub's per-head-SHA matching means an unresolved check is exactly as safe as a `failure` one. The reaper's only job is to turn "safe but silent" into "safe and informative" for the one PR that lost its job (dismiss the stale review, resolve the check to `failure`, so the developer sees a reason instead of a wedge). There is no dead-man threshold here and nothing analogous to it: the ruleset never changes, so there's nothing to countdown toward reverting. `model_timeout_ms` (~8s) is the only timeout that fires constantly/harmlessly (that PR dismisses); `stale_pending_timeout` (~15m) fires rarely, on genuinely lost jobs, and its output is still just "dismiss and ask for re-review" — never a ruleset mutation.
+
+**Liveness beyond the reaper (documented, may remain a stub per §"Build honesty"):** a reconciliation poller concept — the engine periodically lists open enrolled PRs and re-evaluates any head SHA lacking a completed check — covers lost webhooks (GitHub does not auto-redeliver them; a lost webhook just leaves the check missing, which is already safe, merely slow). Its failure mode is slower merges, never a merge without evaluation.
 
 ---
 ## 7. GitHub enrollment (per-repo, via Ruleset)
 
-Enrollment is deliberately explicit and reversible (kill switch = un-enroll).
+Enrollment is deliberately explicit and reversible (kill switch = human un-enrollment via GitOps).
 
-### 7.1 The two ruleset configurations (defined in Git, applied per repo)
+### 7.1 The one permanent ruleset configuration (defined in Git, applied per repo)
 
-There are exactly two states an enrolled repo's default-branch ruleset can be in. The dead-man switch (§7.2) swaps between them automatically.
+There is exactly **one** state an enrolled repo's default-branch ruleset can be in (`deploy/rulesets/enrolled-ruleset.json`). It is static — nothing at runtime holds a credential capable of writing to it, and there is no second "native configuration" it swaps into. Enrolling or un-enrolling a repo is a human, Git-reviewed change to the ruleset's target list, applied via the update-ruleset REST endpoint, which is **`PUT`, not `PATCH`**.
 
-**"Enrolled" configuration (engine active):**
 1. Require a pull request before merging; require ≥1 approving review (unchanged).
 2. **Disable** native "Dismiss stale pull request approvals when new commits are pushed" — the engine now owns staleness (this is what lets the engine *preserve*; it's also why we can't just leave native dismissal on as a backstop — native dismissal firing on every push would leave the engine no way to say "keep it," and the engine can't re-approve).
-3. **Disable** "Require approval of the most recent reviewable push" — subsumed by the engine.
-4. **Require status check** `approval-freshness/evaluated`.
-5. **Restrict who can dismiss reviews** → {engine App, repo admins} (the July-2026 ruleset control).
-6. Keep CODEOWNERS requirements as-is (independent; also denylisted).
-7. Bypass list: empty or admins-only, documented (§security open Q6).
+3. **Disable** "Require approval of the most recent reviewable push" — subsumed by the engine and by the fresh-approval echo (§4.4), which is itself a check-shaped restatement of "approve the latest push."
+4. **Require status check** `approval-freshness/evaluated`, **with `required_status_checks[].integration_id` pinned to the engine's GitHub App.** This is the single most load-bearing line in the ruleset: without it, a check with the same name from any other identity — including a plain `github-actions` workflow — would satisfy the requirement. This is exactly the hole the old peer-override Action exploited by design; pinning closes it permanently.
+5. **Restrict who can dismiss reviews** → {engine App, break-glass team} (the July-2026 ruleset control; exact field name to be verified against the live OpenAPI schema at rollout — §"deploy/rulesets/README.md" has the `gh api` command).
+6. `non_fast_forward` rule: block force pushes (closes a SHA-replay nuance Stage 0's force-push detection alone doesn't fully cover at the ruleset layer).
+7. Keep CODEOWNERS requirements as-is (independent; also denylisted).
+8. Bypass list: **empty.** Break-glass is org owners editing the ruleset itself — a deliberate, audited (`repository_ruleset.*` org audit-log events), Git-reviewed act, never a standing bypass actor.
 
-**"Native" configuration (fallback = today's behavior):**
-- **Enable** native "Dismiss stale pull request approvals when new commits are pushed."
-- **Remove** the required check `approval-freshness/evaluated`.
-- Everything else unchanged.
+**Because org-level rulesets combine as pure AND with repo-level ones and repo admins cannot weaken an org ruleset, this single configuration cannot be quietly loosened by anyone without going through the ruleset's own Git-reviewed change process.**
 
-**Both changes must be applied atomically in one ruleset-update API call.** Re-enabling native dismissal without removing the required check would leave the dead bot's never-green check still blocking merges — reinventing the freeze. Removing the check without re-enabling native dismissal would fail *open*. The pair must move together.
+**Unenrolled repos:** never touched — permanently on native GitHub behavior. Rollout is repo-by-repo.
 
-**Unenrolled repos:** never touched — permanently on the native configuration. Rollout is repo-by-repo.
+**Manual kill switch:** un-enrollment. An org owner removes a repo from the ruleset's target list (or disables the ruleset for that repo) via the same `PUT`-based, Git-reviewed GitOps process used to enroll it — no automation, no `workflow_dispatch`, no environment-protection approval flow, because there is no automated direction to protect against. This instantly and fully restores native branch protection for that repo. It is the *only* kill switch; there is no automatic equivalent, because there is nothing for automation to revert.
 
-### 7.2 The dead-man switch — automatic revert to native when the engine dies
+### 7.2 Recovery when the engine is down (no auto-revert — see §4.3)
 
-The mechanism that guarantees "if anything fails, the org's original control comes back automatically, with no merge freeze and no human paged." **It runs on GitHub's own infrastructure (a scheduled Actions workflow in a locked-down ops repo), so it cannot die with the engine.**
+There is no dead-man switch, no canary, and no scheduled workflow that mutates the ruleset. The ruleset is the fail-safe (§4.3), and it does not need to be reverted to anything — it already fails closed by sitting there, unchanged, requiring a check that simply won't be green until something legitimate makes it so.
 
-**Health detection = synthetic canary (not a heartbeat).** A scheduled workflow (~every 10 min) pushes a trivial commit to a standing PR in a dedicated **canary repo** enrolled exactly like a real one, then verifies the engine set `approval-freshness/evaluated` on the new head SHA within the SLA. This proves the *entire path* works — webhook delivery → queue → evaluation → actuation — which a `/healthz` ping cannot. (The canary's own pushes double as keep-alive so GitHub doesn't auto-disable the scheduled workflow after 60 days of inactivity.)
+**What actually happens if the engine is down:**
+- A freshly-pushed enrolled PR's `approval-freshness/evaluated` check stays missing or `in_progress`. Merge is blocked — the same outcome as any other required check that stopped reporting. This is expected and safe, not an incident from the ruleset's point of view.
+- A developer who wants to proceed gets the PR **freshly re-reviewed on the current head** — exactly the native GitHub UX a dismissal already produces. That approval, submitted with `commit_id == head.sha`, is picked up by `pull_request_review` webhook delivery and echoed to check `success` by whichever of the two implementations is reachable: the engine itself (`freshApproval.ts`, if the pod is up) or, if it isn't, `.github/workflows/fresh-approval-fallback.yaml` — running entirely on GitHub Actions infra, so it does not share fate with the engine's cluster.
+- The fallback workflow authenticates as the **same GitHub App** (via `actions/create-github-app-token@v2`, app-id/private-key from org Actions secrets), because `integration_id` pinning (§7.1) means only that one identity can ever satisfy the required check — a workflow authenticating any other way would write a check the ruleset simply rejects. This is a genuine trade-off (a second custody point for the App's private key) and is documented prominently in the workflow's own header and in SECURITY-REVIEW.md; an org may choose to omit the fallback workflow entirely and accept "engine down ⇒ wait for the pod, or org-owner break-glass" as still fail-closed.
+- **On-call is paged to fix the engine at its own pace — never to unblock developers.** Developers already have a working unblock path (re-review) that does not depend on anyone getting paged.
 
-**Revert behavior (with hysteresis, one-directional):**
-- Canary unmet **twice consecutively** (state persisted in a repo variable — one 30-second pod restart must not trip it) → the workflow PATCHes the org ruleset to apply the **"native" configuration** to all enrolled repos, pages on-call (PagerDuty), and opens an incident issue with the canary evidence.
-- **Revert is automatic; re-enrollment is always a human action** — a `workflow_dispatch` behind an environment-protection approval, run only after the engine is verified healthy. Auto-revert + auto-re-enroll would flap the org's branch protection on every blip. Never automate the re-enroll direction.
-
-**Credential note (for security):** ruleset updates need an org-ruleset-write credential — the most powerful secret in the system. It lives only in the ops repo's environment secrets, and its *only* automated action is to restore the **stricter** native control. It is a fail-safe credential, not an escalation credential: a thief's maximum power is turning strict dismissal *back on*. Every ruleset change also lands in GitHub's org audit log. (Verify exact API scope — org vs repo ruleset endpoints — in the P0 mechanics memo.)
-
-**Residual exposure:** GitHub cron drifts under load, so worst-case detect-and-revert is ~20–25 min (`deadmanRevertMinutes`, §6.5). During that window, enrolled PRs with a *fresh post-approval push* wait on the pending required check; already-green PRs are unaffected. After revert, everything flows under native rules. If GitHub Actions itself is down, the dead-man can't fire — but then GitHub is broadly degraded and nobody's merging anyway; the manual kill switch (below) covers truly bizarre cases.
-
-**Manual kill switch:** the same ruleset swap, run on demand by a human — instant return to native, org-wide, no deploy. The dead-man is just this, automated.
+**There is no re-enrollment workflow, because there was never a de-enrollment to reverse.** The ruleset never changed. The only thing that changes across an outage is how many PRs are waiting on a fresh review instead of an automatic preserve — a UX cost, not a security one.
 
 ---
 
@@ -362,19 +360,18 @@ Reuses the platform LGTM stack.
 - **Logs (Loki audit tenant):** one structured event per decision (§src/audit fields).
 - **Dashboard (Grafana):** decision funnel (how many resolved at each stage), preserve-rate trend, cost/PR, latency, fail-closed activations, audit-finding count.
 - **Alerts:** engine error rate > X; fail-closed activation spike; anomalous preserve-rate swing (drift detector); webhook-verify failures (possible spoofing); model cost anomaly.
-- **SLOs:** decision latency p95 < 30s; availability target 99.9% — but note availability is *not* safety-critical here: sustained downtime auto-reverts to native behavior (§7.2), so an outage costs the *feature* (trivial-push preservation), never safety and never developer throughput. false-preserve findings = 0 (hard).
-- **Dead-man metrics:** `afe_canary_success`, `afe_deadman_reverts_total`, `afe_circuit_breaker_state`, `afe_current_mode{tier}` — the org must be able to see at a glance which tier it's operating in.
+- **SLOs:** decision latency p95 < 30s; availability target 99.9% — but note availability is *not* safety-critical here: sustained downtime just means more PRs wait on a fresh human re-review via the fallback path (§7.2) instead of an automatic preserve, so an outage costs the *feature* (trivial-push preservation) and some throughput, never safety. false-preserve findings = 0 (hard).
+- **Fail-safe & drift metrics:** `afe_fresh_approval_echo_total{source=engine|fallback_workflow}`, `afe_circuit_breaker_state`, `afe_current_mode{tier}`, `afe_ruleset_drift_alerts_total` (from the periodic `integration_id`/rule audit, §"deploy/rulesets/README.md" — a monitoring aid, not a safety mechanism, since the ruleset itself is what enforces) — the org must be able to see at a glance which tier it's operating in and whether the ruleset still matches what's in Git.
 
 ---
 
 ## 11. Runbook (summary — full in RUNBOOK.md)
-- **Engine down (brief blip, < ~15m):** freshly-pushed enrolled PRs wait briefly on the pending check; already-green PRs unaffected. Engine recovers, evaluates the backlog. No action needed.
-- **Engine down (sustained):** the dead-man switch (§7.2) auto-reverts the ruleset to **native** after two consecutive canary misses (~20–25m worst case). Org returns to today's behavior automatically; on-call is paged to fix the engine *at leisure* — developers are NOT blocked and NOBODY is paged to unblock them. After the engine is healthy, a human re-enrolls via the approval-gated `workflow_dispatch`. **Merges never freeze on engine health.**
+- **Engine down (any duration):** nothing to do for safety — freshly-pushed enrolled PRs simply wait on the required check, exactly as they would for any other down check. Developers unblock themselves the same way native GitHub already asks: get a fresh approval on the current head SHA, which `fresh-approval-fallback.yaml` (running on GitHub's infra, independent of the engine) echoes to a green check. On-call is paged to fix the pod *at leisure* — never to unblock developers.
 - **Model provider outage (engine still up):** circuit breaker trips to **Tier 2 deterministic-only** — Stage 0/1 keep preserving the safe buckets; everything else dismisses (native-equivalent). Auto-recovers when the provider returns.
 - **False dismiss (engine too strict):** human just re-approves — same as today. Log a tuning ticket.
 - **Suspected false preserve:** audit sampling or a report → pull the audit event (delta + verdict + gates) → if real, dismiss the class in the denylist immediately + add to adversarial corpus + post-mortem.
 - **Prompt/threshold change:** PR → eval + adversarial suite must pass in CI → shadow one cycle if material → ship. Prompt version auto-stamped in audit.
-- **Manual kill switch (any doubt):** run the ruleset swap to native on demand — instant return to today's behavior, org-wide, no deploy.
+- **Manual kill switch (any doubt):** a human un-enrolls the repo via the Git-reviewed ruleset `PUT` (§7.1) — instant return to fully native branch protection, org-wide or per-repo, no deploy, no automated equivalent.
 
 ---
 
@@ -392,8 +389,9 @@ Reuses the platform LGTM stack.
 - [ ] Actuator proven (test) to have no approve path.
 - [ ] Shadow-mode precision/false-preserve gates met (P1).
 - [ ] Fail-safe verified by chaos test (kill the worker mid-decision → PR resolves to dismiss via reaper, never wedged in pending).
-- [ ] Dead-man verified by chaos test (take the engine fully down → canary fails twice → ruleset auto-reverts to native within budget → merges flow under native rules; re-enroll requires human approval).
-- [ ] Kill-switch drill executed and documented.
+- [ ] Fail-closed fallback verified by chaos test: kill the engine entirely, confirm a freshly-pushed enrolled PR stays blocked (no `success` on the new head SHA), then confirm a fresh human approval submitted on that head unblocks it — with the engine still down — via `fresh-approval-fallback.yaml` alone.
+- [ ] Kill-switch drill executed and documented (un-enroll a repo via the ruleset `PUT`; confirm native branch protection returns immediately; no automated re-enroll path exists to also verify).
+- [ ] `integration_id` drift audit item: a scheduled check (`gh api /orgs/{org}/rulesets/{id}`) confirms the required check's `integration_id` still matches the engine's App and the rule set hasn't drifted from Git; alerting wired to `afe_ruleset_drift_alerts_total`.
 - [ ] Dashboards + alerts live; audit events flowing to the 6-year tenant.
 - [ ] ADR merged with invariants, precedent, compliance mapping, and the reversal conditions.
 

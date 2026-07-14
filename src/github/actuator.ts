@@ -47,6 +47,17 @@ export interface ActuationContext {
 
 const CHECK_NAME = "approval-freshness/evaluated";
 
+// A minimal actuation context for check-only writes (pending / fresh-approval echo),
+// where there is no ladder Decision, no reviews to dismiss, and no reviewers to re-request.
+// Kept separate from ActuationContext so callers cannot accidentally pass an incomplete
+// context into the full dismiss/preserve path (and vice versa).
+export interface CheckOnlyContext {
+  octokit: Octokit;
+  owner: string; repo: string;
+  headSha: string;
+  dryRun: boolean; // shadow mode: log only, no writes
+}
+
 /**
  * Actuates the engine's decision by mutating GitHub state.
  * Fail-Closed Invariant: This component NEVER submits an approving review. It can only
@@ -98,8 +109,19 @@ export async function actuate(decision: Decision, ctx: ActuationContext): Promis
  * Fail-Closed Invariant: A failure to set the check-run throws an error. The check-run itself
  * communicates the engine's stance, and setting it to failure effectively blocks PR merges.
  *
+ * Conclusion type space is intentionally narrowed to exactly "success" | "failure".
+ * GitHub also accepts "neutral" and "skipped" conclusions on a check run, but both of those
+ * SATISFY a required status check (they do not block merge) — the same as "success" from
+ * GitHub's ruleset-evaluation point of view. If this engine ever emitted either of those
+ * conclusions in a code path that was *meant* to be fail-closed (e.g. a caught error, an
+ * ambiguous evaluation, a timeout), that would be a silent fail-OPEN bug: the merge would be
+ * allowed even though nothing verified it should be. So the type signature below forbids them
+ * at compile time, and test/no_approve_path.test.ts additionally greps all of src/ to guarantee
+ * the literal strings "neutral" and "skipped" never appear as conclusions, so a future edit
+ * cannot reintroduce them even by passing a wider string type through carelessly.
+ *
  * @param ctx - The ActuationContext.
- * @param conclusion - The check run conclusion ("success" or "failure").
+ * @param conclusion - The check run conclusion ("success" or "failure" — nothing else, ever).
  * @param summary - A summary of the check result.
  * @param d - The Decision context for the output text.
  */
@@ -108,6 +130,65 @@ async function setCheck(ctx: ActuationContext, conclusion: "success" | "failure"
     owner: ctx.owner, repo: ctx.repo, name: CHECK_NAME, head_sha: ctx.headSha,
     status: "completed", conclusion,
     output: { title: CHECK_NAME, summary, text: "```json\n" + JSON.stringify(d, null, 2) + "\n```" },
+  }));
+}
+
+/**
+ * Sets the check-run to a pending ("in_progress") status, used on push receipt so developers
+ * see the engine is actively evaluating the new head SHA rather than assuming nothing is
+ * happening.
+ * Fail-Closed Invariant: This is UX only, never a safety mechanism. Per F1 (required status
+ * checks are matched strictly per head SHA), a brand-new head SHA never inherits a completed
+ * check from any prior SHA — it starts with no check run at all, which already blocks merge.
+ * Writing "in_progress" here does not change that: "in_progress" is not a completed status,
+ * so it cannot satisfy the required check either. This function exists purely so humans get
+ * prompt visual feedback in the PR checks UI; the actual gate is unaffected by its presence
+ * or absence.
+ *
+ * @param ctx - The CheckOnlyContext (no Decision, no reviews involved yet).
+ */
+export async function setCheckPending(ctx: CheckOnlyContext): Promise<void> {
+  if (ctx.dryRun) return; // shadow mode: no writes
+  await withRateLimit(() => ctx.octokit.checks.create({
+    owner: ctx.owner, repo: ctx.repo, name: CHECK_NAME, head_sha: ctx.headSha,
+    status: "in_progress",
+    output: { title: CHECK_NAME, summary: "Approval-freshness engine is evaluating this change..." },
+  }));
+}
+
+/**
+ * Sets the check-run to success as an echo of a fresh, platform-verified human approval on
+ * the exact current head SHA (the "fresh-approval echo" path — see src/github/freshApproval.ts).
+ * Fail-Closed Invariant: This is one of only two producers of check success in the entire
+ * system (the other being stage1/stage2 PRESERVE via setCheck above), and both require either
+ * a deterministic semantic-null proof or a real human approval GitHub itself verified was
+ * submitted against the current head — never a bare AI judgment, never an unconditional
+ * default. Callers MUST have already run evaluateFreshApproval() and confirmed qualify===true;
+ * this function performs no re-validation of its own, by design, so that the pure decision
+ * function stays the single source of truth and is fully table-testable in isolation.
+ *
+ * @param ctx - The CheckOnlyContext.
+ * @param reviewer - The login of the human who submitted the fresh approval (for the summary).
+ * @param sha - The head SHA the approval was submitted against (echoed from review.commit_id,
+ *   NOT recomputed here — the caller already proved it equals pr.head.sha).
+ */
+export async function setCheckSuccessForFreshApproval(ctx: CheckOnlyContext, reviewer: string, sha: string): Promise<void> {
+  if (ctx.dryRun) return; // shadow mode: no writes
+  await withRateLimit(() => ctx.octokit.checks.create({
+    owner: ctx.owner, repo: ctx.repo, name: CHECK_NAME, head_sha: sha,
+    status: "completed", conclusion: "success",
+    output: {
+      title: CHECK_NAME,
+      summary: `Fresh human approval on head ${sha} by @${reviewer}.`,
+      text: [
+        `@${reviewer} approved commit \`${sha}\`, which GitHub confirms is the exact current`,
+        `head of this pull request. A fresh approval on the exact head IS the re-review this`,
+        `check exists to require — this check success echoes that platform-verified fact.`,
+        ``,
+        `This is not a machine approval. No AI or heuristic judged this change; the engine`,
+        `only relayed what GitHub itself already verified about the human review.`,
+      ].join("\n"),
+    },
   }));
 }
 
