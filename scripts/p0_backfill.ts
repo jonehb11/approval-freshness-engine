@@ -65,7 +65,9 @@ async function main() {
 
       tally.totalPostApprovalPushes++;
 
-      const delta = await buildDelta(octokit, owner, repo, pr, approvals[0].commit_id!, pr.head.sha);
+      // No push event in the backfill path, so webhookForced is false; force-push detection
+      // here relies on buildDelta's compare-status corroboration.
+      const delta = await buildDelta(octokit, owner, repo, pr, approvals[0].commit_id!, pr.head.sha, { webhookForced: false });
       const s0 = stage0(delta, cfg);
       if (s0 && s0.action === Action.DISMISS) { tally.wouldDismissStage0++; continue; }
       const s1 = await stage1(delta, cfg);

@@ -133,8 +133,10 @@ function isTrivialClass(file: string, delta: Delta, cfg: EngineConfig): boolean 
     // Only trivial if ALL commit authors are approved bots.
     // [FIX] Logic Bypass: `every()` returns true for empty arrays!
     // If commitAuthors is empty, an attacker could bypass the lockfile author restriction.
-    return delta.commitAuthors.length > 0 && 
-           delta.commitAuthors.every((a) => tc.lockfiles.requireBotAuthor.includes(a));
+    // A null/unverified author can never satisfy the bot-author allowlist (identity is only a
+    // GitHub-resolved login); guard the null before the string-only includes() check.
+    return delta.commitAuthors.length > 0 &&
+           delta.commitAuthors.every((a) => a !== null && tc.lockfiles.requireBotAuthor.includes(a));
   }
   if (tc.generated.requireDeterministicRegen &&
       tc.generated.files.some((g) => minimatch(file, g, { dot: true }))) return true;

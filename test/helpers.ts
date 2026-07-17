@@ -3,6 +3,7 @@ import { EngineConfig } from "../src/config/schema.js";
 export function testConfig(): EngineConfig {
   return {
     difftasticBin: "difft",
+    selfGovernedRepos: ["test-org/approval-freshness-engine"],
     denylist: { paths: ["**/*.tf", "**/prod/**", ".github/workflows/**", "**/package.json"] },
     codeownersGlobs: [],
     trivialClasses: {

@@ -35,6 +35,7 @@ that fails the build if any approve path exists in the code.
 5. Model output is data, not action — no tools, no credentials, no write access.
 6. Immutable 6-year audit trail of every decision.
 7. Static, org-owned ruleset with `integration_id` pinning; no runtime credential can alter enforcement. Manual kill switch = human GitOps un-enrollment.
+8. The engine never evaluates its own control surface: a PR against a `selfGovernedRepos` repo touching gates/prompt/echo/workflows/ruleset is categorically dismissed (`self_governance`, hardcoded globs, CODEOWNERS-required security review), and the foreign-author gate uses GitHub-verified account logins only — a null (unverified) author is categorically foreign, git author metadata is never trusted for identity.
 
 ## Why it's *stronger* than the status quo (the fatigued re-approval it replaces)
 | | Today | Engine |

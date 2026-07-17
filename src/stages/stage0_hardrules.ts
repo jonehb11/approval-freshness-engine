@@ -3,6 +3,38 @@ import { Decision, Delta, dismiss, ReasonCode } from "./types.js";
 import { EngineConfig } from "../config/schema.js";
 
 /**
+ * The engine's own control surface. If a PR against a self-governed repo (see
+ * cfg.selfGovernedRepos) touches ANY of these, the engine withholds its opinion and dismisses:
+ * it will never *preserve* an approval on a change to the gates, prompt, echo, workflows, or
+ * ruleset that judge it. Such PRs always get fresh human review (CODEOWNERS-required security
+ * review + native re-approval).
+ *
+ * This list is a HARDCODED CODE CONSTANT, deliberately NOT sourced from the mutable EngineConfig,
+ * so a PR (or a compromised config) can never loosen the boundary that protects the engine.
+ * Kept 1:1 in sync with .github/CODEOWNERS (see the sync-guard test in
+ * test/self_governance.test.ts).
+ */
+export const SELF_GOVERNANCE_GLOBS: string[] = [
+  ".github/**",
+  "deploy/rulesets/**",
+  "deploy/helm/**",
+  "deploy/terraform/**",
+  "src/config/**",
+  "config/**",
+  "src/model/**",
+  "src/stages/**",
+  // The whole src/github/ directory, not just the echo + actuator: pr.ts holds the
+  // identity-resolution and force-push logic, auth.ts holds webhook signature verification —
+  // both are as much "the gate" as the gates themselves. Directory-wide coverage also means
+  // any future file added here is control surface by default rather than by remembering.
+  "src/github/**",
+  "src/index.ts",
+  "src/audit/**",
+  "test/no_approve_path.test.ts",
+  "test/check_conclusion_guard.test.ts",
+];
+
+/**
  * Stage 0: deterministic categorical dismissal. NO model. NO network.
  * Fail-Closed Invariant: This stage defaults to returning a DISMISS decision immediately if any
  * unsafe or rewritten history conditions are met. If no rules trip, it returns null,
@@ -13,6 +45,24 @@ import { EngineConfig } from "../config/schema.js";
  * @returns A DISMISS Decision if a hard rule trips, or null if it is safe to proceed.
  */
 export function stage0(delta: Delta, cfg: EngineConfig): Decision | null {
+  // 0. Self-governance: the engine cannot grade changes to its OWN control surface.
+  // The engine always evaluates against DEPLOYED config (a PR can never loosen the rules it is
+  // judged under mid-flight); this rule closes the remaining boundary — the engine never
+  // *preserves* an approval on a PR that changes its own gates, prompt, echo, workflows, or
+  // ruleset. SELF_GOVERNANCE_GLOBS is a code constant (not config) so mutable config cannot
+  // widen what the engine is allowed to self-grade. nocase guards against casing-evasion.
+  if (cfg.selfGovernedRepos.includes(delta.repo)) {
+    const selfMatchOpts = { dot: true, nocase: true };
+    for (const file of delta.changedFiles) {
+      for (const glob of SELF_GOVERNANCE_GLOBS) {
+        if (minimatch(file, glob, selfMatchOpts)) {
+          return dismiss(0, "self_governance",
+            `Changed file ${file} is part of the engine's own control surface (matched ${glob}); the engine does not evaluate changes to its own control surface; human review required.`);
+        }
+      }
+    }
+  }
+
   // 1. Force-push / rebase-with-content / base change → the classic hijack surface.
   if (delta.forcePushed) return dismiss(0, "force_push", "History was rewritten since approval.");
 
@@ -22,9 +72,12 @@ export function stage0(delta: Delta, cfg: EngineConfig): Decision | null {
   // We let it fall through so Stage 1 can distinguish. (No dismiss here.)
 
   // 2. A commit by anyone other than the PR author → someone pushed onto an approved branch.
-  // [FIX] Logic Bypass: We must not ignore falsy/null authors. An empty/null author 
-  // (e.g., an unlinked GitHub account) is still a foreign author. Ignoring them allows
-  // an attacker to push commits anonymously and bypass this check.
+  // Identity contract: commitAuthors entries are GitHub-verified account logins or null.
+  // null means GitHub could not resolve a verified account (buildDelta never falls back to
+  // attacker-controlled git-author metadata) and is CATEGORICALLY foreign.
+  // [FIX] Logic Bypass: We must not ignore falsy/null authors. A null/unverified author
+  // is still a foreign author. Ignoring them would let an attacker push commits with an
+  // unresolvable identity and bypass this check.
   const foreign = delta.commitAuthors.filter((a) => !a || a !== delta.prAuthor);
   if (foreign.length > 0) {
     return dismiss(0, "foreign_author_commit",

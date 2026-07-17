@@ -22,6 +22,7 @@ export type ReasonCode =
   | "model_error"
   | "unresolved_approved_sha"
   | "unsupported_language_fallthrough"
+  | "self_governance"
   | "stage2_unexpected_error";
 
 export interface Decision {
@@ -33,12 +34,13 @@ export interface Decision {
 }
 
 export interface Delta {
+  repo: string;             // "owner/name" of the repo under evaluation (for self-governance gate)
   approvedSha: string;
   headSha: string;
   changedFiles: string[];
   addedLines: number;
   removedLines: number;
-  commitAuthors: string[];  // logins of commit authors in (approvedSha..headSha]
+  commitAuthors: (string | null)[];  // GitHub-verified logins of commit authors in (approvedSha..headSha]; null = GitHub could not resolve a verified account and is treated as FOREIGN
   prAuthor: string;
   forcePushed: boolean;
   baseChanged: boolean;

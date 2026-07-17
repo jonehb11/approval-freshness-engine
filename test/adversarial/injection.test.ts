@@ -4,6 +4,7 @@ import { Action, Delta } from "../../src/stages/types.js";
 import { testConfig } from "../helpers.js";
 
 const mk = (patch: string, files = ["src/x.ts"]): Delta => ({
+  repo: "acme/widget", // non-self repo → self-governance gate does not apply to these fixtures
   approvedSha: "a", headSha: "b", changedFiles: files, addedLines: 3, removedLines: 0,
   commitAuthors: ["alice"], prAuthor: "alice", forcePushed: false, baseChanged: false,
   patchByFile: { [files[0]]: patch },

@@ -41,15 +41,24 @@ async function withRateLimit<T>(action: () => Promise<T>): Promise<T> {
  * @param pr - The PR payload data.
  * @param approvedSha - The commit SHA that was approved.
  * @param headSha - The current PR head SHA.
+ * @param opts - opts.webhookForced is the push event payload's `forced` flag as reported by
+ *   the caller. The push-event handler passes it through; the pull_request "synchronize" path
+ *   has no such flag and passes false, relying instead on the compare-status corroboration
+ *   below (defense in depth: history rewrites are detected even if the push webhook was lost).
  * @returns A promise resolving to the unified Delta object.
  */
 export async function buildDelta(
   octokit: Octokit, owner: string, repo: string, pr: any, approvedSha: string, headSha: string,
+  opts: { webhookForced: boolean },
 ): Promise<Delta> {
   const files: any[] = [];
   const commits: any[] = [];
   let page = 1;
   const per_page = 100;
+  // Compare status from the FIRST page for the basehead `${approvedSha}...${headSha}`.
+  // "diverged"/"behind" mean headSha no longer contains approvedSha → history was rewritten
+  // since approval, regardless of what any webhook reported.
+  let firstStatus: string | undefined;
 
   // Optimize and handle pagination using a loop
   while (true) {
@@ -57,10 +66,11 @@ export async function buildDelta(
       owner, repo, basehead: `${approvedSha}...${headSha}`,
       per_page, page,
     }));
-    
+
+    if (page === 1) firstStatus = cmp.data.status;
     if (cmp.data.files) files.push(...cmp.data.files);
     if (cmp.data.commits) commits.push(...cmp.data.commits);
-    
+
     // Stop if we receive fewer items than the per_page limit, meaning we've hit the last page
     if ((cmp.data.commits?.length ?? 0) < per_page && (cmp.data.files?.length ?? 0) < per_page) {
       break;
@@ -69,13 +79,21 @@ export async function buildDelta(
   }
 
   return {
+    repo: `${owner}/${repo}`,
     approvedSha, headSha,
     changedFiles: files.map((f) => f.filename),
     addedLines: files.reduce((n, f) => n + (f.additions ?? 0), 0),
     removedLines: files.reduce((n, f) => n + (f.deletions ?? 0), 0),
-    commitAuthors: commits.map((c) => c.author?.login ?? c.commit.author?.name ?? ""),
+    // SECURITY: identity is ONLY the GitHub-resolved account login (c.author.login). We never
+    // fall back to git-author metadata, which is attacker-controlled (`git config user.name
+    // <victim-login>` would otherwise let a foreign commit impersonate the PR author whenever
+    // GitHub cannot resolve a verified account). Unresolved → null, which stage0 treats as foreign.
+    commitAuthors: commits.map((c) => c.author?.login ?? null),
     prAuthor: pr.user?.login ?? "",
-    forcePushed: false, // derive from push event `forced` flag in the webhook path
+    // forcePushed corroboration: honor the webhook's forced flag, and independently detect a
+    // rewritten history via the compare status ("diverged"/"behind" ⇒ headSha no longer
+    // contains approvedSha). Either signal alone is sufficient to treat the branch as rewritten.
+    forcePushed: opts.webhookForced || firstStatus === "diverged" || firstStatus === "behind",
     baseChanged: commits.length === 0 && files.length === 0,
     patchByFile: Object.fromEntries(files.map((f) => [f.filename, f.patch ?? ""])),
   };

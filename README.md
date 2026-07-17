@@ -53,6 +53,7 @@ The `docs/` directory contains all the necessary documents to understand how the
 - [SECURITY-REVIEW.md](docs/SECURITY-REVIEW.md) — The security one-pager detailing the fail-closed invariant.
 - [IMPLEMENTATION-PLAN.md](docs/IMPLEMENTATION-PLAN.md) — The full build and implementation details.
 - [RUNBOOK.md](docs/RUNBOOK.md) — The operational runbook for on-call and maintenance.
+- [SECURITY-FOLLOWUPS.md](docs/SECURITY-FOLLOWUPS.md) — Disposition of the three security-review follow-up items (custody decision + two fixes), with evidence.
 
 ## Start here
 1. Read the [SECURITY-REVIEW.md](docs/SECURITY-REVIEW.md) and [IMPLEMENTATION-PLAN.md](docs/IMPLEMENTATION-PLAN.md) to understand the architecture.
@@ -93,6 +94,13 @@ App ID, App private key, webhook secret; set `MODEL_PROVIDER`/`MODEL_ID`. Start 
 audit log until you trust the decisions, then flip it off. Wire `src/audit/` output to your
 log stack (e.g. Loki) — every decision, dismissal, and fresh-approval echo is a structured event.
 
+Set the **required** `selfGovernedRepos` config field (`EngineConfig`, `src/config/schema.ts`) to
+the list of repos that host this engine's control surface — typically
+`["<your-org>/approval-freshness-engine"]` plus any fork/ops repos carrying it. This is what makes
+the engine refuse to grade its own gates: a PR against one of these repos that touches the control
+surface is categorically dismissed (`self_governance`) for human review, never preserved. The field
+is required precisely so this is a conscious deploy-time decision, not a default someone forgets.
+
 ### 4. Apply the org ruleset (the actual merge gate)
 This is the security-critical step. Follow `deploy/rulesets/README.md` exactly:
 1. In `deploy/rulesets/enrolled-ruleset.json`, replace the two placeholders:
@@ -109,6 +117,13 @@ This is the security-critical step. Follow `deploy/rulesets/README.md` exactly:
 4. Optional hardening (recommended): "restrict who can dismiss reviews" → {your App, a
    break-glass team}. The exact API field must be confirmed live first — the rulesets README
    has the verification commands.
+5. Replace the CODEOWNERS placeholder team. `.github/CODEOWNERS` ships with the placeholder owner
+   `@YOUR-ORG/security-review` over the engine's control surface (workflows, ruleset, helm, config,
+   prompt, gates, the echo, the actuator, the invariant tests). Replace it with a **real** security
+   team and make sure the ruleset's `require_code_owner_review: true` (already in
+   `enrolled-ruleset.json`) is active on your engine repo — otherwise the control surface has no
+   enforced reviewer. This pairs with `selfGovernedRepos` (step 3): the engine withholds its
+   opinion on control-surface PRs, and CODEOWNERS makes sure a human security reviewer is required.
 
 ### 5. Enable the fresh-approval fallback (optional but recommended)
 This is the unblock path that works while the pod is down. It must exist **in each enrolled
@@ -136,6 +151,10 @@ On a throwaway enrolled repo:
    **not** satisfying the requirement ("not set by the expected GitHub App") — proves the
    `integration_id` pin. If this step fails, STOP: your ruleset is not pinned.
 6. Restart the engine; confirm normal evaluation resumes on the next push.
+7. On the engine repo itself (enrolled with `selfGovernedRepos` set), open a PR touching
+   `src/model/prompt.ts` (or any control-surface path) → the engine must **dismiss** with reason
+   `self_governance` (it never grades its own gates), and the PR must **demand a CODEOWNERS
+   security review** before it can merge. Proves both control-surface governance halves.
 
 ### 7. Operate
 Set up the drift-monitoring query from `deploy/rulesets/README.md` (alert on any ruleset

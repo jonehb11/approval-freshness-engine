@@ -70,9 +70,10 @@ The pivotal input. For a PR with a current approving review R submitted at commi
 
 ### 3.2 Stage 0 — hard rules (deterministic, no model)
 Dismiss immediately if ANY predicate is true:
+0. **Self-governance:** the repo under evaluation is in `selfGovernedRepos` (required config) AND any changed file matches `SELF_GOVERNANCE_GLOBS` — a **hardcoded** constant in `stage0_hardrules.ts` (deliberately not config, so config can never loosen it) covering the engine's own control surface (`.github/**`, `deploy/rulesets/**`, `deploy/helm/**`, `src/config/**`, `config/**`, `src/model/**`, `src/stages/**`, `src/github/freshApproval.ts`, `src/github/actuator.ts`, and the invariant tests). The engine never *preserves* an approval on a PR that changes its own gates, prompt, echo, workflows, or ruleset — such PRs always get fresh human review (CODEOWNERS-required security review + native re-approval), engine opinion withheld. Reason code `self_governance`. Kept in sync with `.github/CODEOWNERS` (§6) by a test.
 1. `changed_files ∩ denylist ≠ ∅` — glob denylist (§6.1), evaluated on the union of files changed across the whole delta.
-2. Force-push / history rewrite detected (`before`/`after` non-fast-forward, or base changed).
-3. Any commit in the delta authored by a login ≠ the PR author's login (covers the "someone else pushed onto my approved branch" hijack).
+2. Force-push / history rewrite detected. Sourced two ways (defense in depth): the push event payload's `forced` flag (passed into `buildDelta` as `opts.webhookForced`), AND compare-status corroboration that works even if the push webhook was lost — a compare status of `diverged` or `behind` on basehead `${approved_sha}...${head_sha}` means `head_sha` no longer contains `approved_sha` (history rewritten since approval) regardless of any webhook.
+3. Any commit in the delta authored by a login ≠ the PR author's login (covers the "someone else pushed onto my approved branch" hijack). **Identity is the GitHub-verified account login only** (the compare API's top-level `author.login` — NOT the `commit.author` git-metadata namespace, which is exactly the attacker-controlled surface the gate refuses to read). A commit GitHub cannot resolve to a verified account has a `null` author, which is categorically foreign → dismiss.
 4. The delta touches CODEOWNERS-governed paths (belt to the denylist's suspenders).
 5. Injection-canary: delta text contains classifier-targeting patterns (§6.3) — dismiss AND flag (never let Stage 2 see it).
 6. Delta size exceeds `hard_max_lines`/`hard_max_files` (a "trivial fix" that's 2,000 lines isn't trivial; force human review).
@@ -198,6 +199,8 @@ approval-freshness-engine/
 ---
 
 ## 6. Configuration (version-controlled; security co-owns)
+
+**Control-surface CODEOWNERS.** The config here — plus the gates, prompt, echo, workflows, ruleset, and helm surface — is control logic. `.github/CODEOWNERS` routes all of it to a security-review owner (shipped as the placeholder `@YOUR-ORG/security-review`, which forks must replace); enforcement is the ruleset's `require_code_owner_review: true` in `enrolled-ruleset.json`. The same surface is mirrored by the hardcoded `SELF_GOVERNANCE_GLOBS` in Stage 0 (§3.2) so the engine also withholds its own opinion on control-surface PRs — the two lists are kept in sync by a test.
 
 ### 6.1 Denylist (glob, `config/denylist.yaml`)
 ```yaml

@@ -4,6 +4,19 @@ import { z } from "zod";
 // which is the control surface security co-owns.
 export interface EngineConfig {
   difftasticBin: string;
+  // Repos whose control surface this engine must NOT self-grade. REQUIRED (not optional) so
+  // every deployment consciously declares its own identity — typically
+  // ["<org>/approval-freshness-engine"] plus any fork/ops repos that host engine control
+  // surface. When delta.repo is in this list and a changed file matches a
+  // SELF_GOVERNANCE_GLOB (a hardcoded constant in stage0, deliberately NOT here so mutable
+  // config can never loosen it), Stage 0 dismisses with reason "self_governance": the engine
+  // never preserves an approval on a PR that alters its own gates, prompt, echo, workflows,
+  // or ruleset. Such PRs always get fresh human review (CODEOWNERS security review).
+  // When loadConfig is wired, validate this with zod as a non-empty array of "owner/name"
+  // strings so a missing/misconfigured value surfaces as an explicit startup error rather
+  // than a per-PR runtime throw (which the ladder would still convert to a fail-closed
+  // dismiss, but with an opaque model_error reason).
+  selfGovernedRepos: string[];
   denylist: { paths: string[] };
   codeownersGlobs?: string[];
   trivialClasses: {

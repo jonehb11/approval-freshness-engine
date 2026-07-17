@@ -4,6 +4,7 @@ import { Action, Delta } from "../src/stages/types.js";
 import { testConfig } from "./helpers.js";
 
 const base: Delta = {
+  repo: "acme/widget", // non-self repo → self-governance gate does not apply to these fixtures
   approvedSha: "a", headSha: "b", changedFiles: [], addedLines: 1, removedLines: 0,
   commitAuthors: ["alice"], prAuthor: "alice", forcePushed: false, baseChanged: false, patchByFile: {},
 };
@@ -22,6 +23,16 @@ describe("stage0 hard rules (the categorical-safety gate)", () => {
 
   it("dismisses when a non-author pushes onto the approved branch", () => {
     const d = stage0({ ...base, commitAuthors: ["alice", "mallory"] }, testConfig());
+    expect(d?.reason).toBe("foreign_author_commit");
+  });
+
+  // The exact security-review attack: a foreign commit whose GitHub account is unresolved
+  // (author === null) but whose git-author metadata is set to the PR author's login. Because
+  // identity is null (never the spoofable git metadata), the null author is categorically
+  // foreign and stage0 must dismiss — even though prAuthor matches the spoofed name.
+  it("SPOOF: null (unverified) author cannot impersonate the PR author via git metadata", () => {
+    const d = stage0({ ...base, commitAuthors: [null], prAuthor: "alice" }, testConfig());
+    expect(d?.action).toBe(Action.DISMISS);
     expect(d?.reason).toBe("foreign_author_commit");
   });
 

@@ -1,0 +1,57 @@
+# CODEOWNERS — the engine's control surface.
+#
+# Every path below is part of the trust base that decides whether a stale human approval is
+# preserved or dismissed. A change to any of it can, in principle, weaken the merge gate, the
+# gates' logic, the model prompt, the "success" echo, the deployment identity, or the
+# invariant proofs. Such changes therefore REQUIRE security-team review.
+#
+# Enforcement: this is enforced by the enrolled ruleset's `require_code_owner_review: true`
+# (see deploy/rulesets/enrolled-ruleset.json). It is also mirrored, in CODE, by the Stage-0
+# self-governance rule (SELF_GOVERNANCE_GLOBS in src/stages/stage0_hardrules.ts): when the
+# engine evaluates a PR against its OWN repo (cfg.selfGovernedRepos) that touches any of these
+# paths, it withholds its opinion and dismisses with reason "self_governance" — the engine
+# never grades changes to the gates that judge it.
+#
+# FORKS / DEPLOYERS: replace the placeholder owner `@YOUR-ORG/security-review` below with a
+# real team, add your engine repo to `selfGovernedRepos` in config, and enable the CODEOWNERS
+# required-review ruleset toggle on your engine repo. The placeholder is inert until you do.
+#
+# Kept 1:1 in sync with SELF_GOVERNANCE_GLOBS (see the sync-guard test in
+# test/self_governance.test.ts).
+
+# Workflows (incl. the fresh-approval fallback) and this CODEOWNERS file itself.
+/.github/                          @YOUR-ORG/security-review
+
+# The merge gate (the ruleset that requires approval + status check).
+/deploy/rulesets/                  @YOUR-ORG/security-review
+
+# Deployment surface for the engine's identity (Pod Identity / secrets).
+/deploy/helm/                      @YOUR-ORG/security-review
+/deploy/terraform/                 @YOUR-ORG/security-review
+
+# Thresholds schema + loadConfig.
+/src/config/                       @YOUR-ORG/security-review
+
+# Denylist location (config/denylist.yaml per docs/IMPLEMENTATION-PLAN.md §6).
+/config/                           @YOUR-ORG/security-review
+
+# Model prompt is control logic; provider wiring.
+/src/model/                        @YOUR-ORG/security-review
+
+# The gates themselves (the ladder + every stage).
+/src/stages/                       @YOUR-ORG/security-review
+
+# The entire GitHub boundary: the "success" echo (freshApproval.ts), the only GitHub writer
+# (actuator.ts), identity/force-push resolution (pr.ts), and webhook signature verification
+# (auth.ts). Directory-wide so future files here are control surface by default.
+/src/github/                       @YOUR-ORG/security-review
+
+# Webhook server + event dispatch (what gets routed to the gates at all).
+/src/index.ts                      @YOUR-ORG/security-review
+
+# The immutable audit trail (tampering here hides evidence of decisions).
+/src/audit/                        @YOUR-ORG/security-review
+
+# The invariant proofs (no-approve path + check-conclusion guard).
+/test/no_approve_path.test.ts      @YOUR-ORG/security-review
+/test/check_conclusion_guard.test.ts @YOUR-ORG/security-review
