@@ -1,11 +1,45 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { unlink } from "node:fs/promises";
+import { availableParallelism } from "node:os";
 import { minimatch } from "minimatch";
 import { Decision, Delta, preserve } from "./types.js";
 import { EngineConfig } from "../config/schema.js";
 
 const run = promisify(execFile);
+
+// GLOBAL difftastic process bound, shared across ALL concurrent evaluations. The per-evaluation
+// chunking below (CONCURRENCY = 10) only bounds one evaluation; with the work queue running up
+// to AFE_WORKER_CONCURRENCY (default 16) evaluations at once, the unshared worst case would be
+// 16 × 10 = 160 concurrent difftastic OS processes against a ~1-CPU container — fork/OOM/CPU
+// thrash. difftastic bursts CPU, so the process-wide ceiling is sized to the actual CPU budget
+// (never above 8), not to task concurrency. Overridable via AFE_DIFFT_MAX_PROCS for larger
+// nodes. Plain promise-chain semaphore: acquire returns a release function; FIFO fairness.
+const MAX_DIFFT_PROCS = (() => {
+  const raw = parseInt(process.env.AFE_DIFFT_MAX_PROCS ?? "", 10);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return Math.max(1, Math.min(8, availableParallelism()));
+})();
+
+let difftActive = 0;
+const difftWaiters: Array<() => void> = [];
+
+async function acquireDifftSlot(): Promise<() => void> {
+  if (difftActive < MAX_DIFFT_PROCS) {
+    difftActive++;
+  } else {
+    await new Promise<void>((resolve) => difftWaiters.push(resolve));
+    difftActive++;
+  }
+  let released = false;
+  return () => {
+    if (released) return; // idempotent: a double release must never over-credit the semaphore
+    released = true;
+    difftActive--;
+    const next = difftWaiters.shift();
+    if (next) next();
+  };
+}
 
 /**
  * Executes Stage 1: deterministic semantic diffing via difftastic. NO model.
@@ -100,11 +134,18 @@ async function difftasticStructuralChange(
     //    ERR_CHILD_PROCESS_STDIO_MAXBUFFER throw. We increase the buffer to 10MB.
     // 2. difftastic could hang indefinitely on malformed syntax. We add a timeout
     //    so the engine does not stall.
-    await run(cfg.difftasticBin, ["--exit-code", "--display", "json", approvedTmp, headTmp], {
-      timeout: 30000,
-      maxBuffer: 10 * 1024 * 1024
-    });
-    
+    // Process-wide semaphore (see MAX_DIFFT_PROCS above): bounds TOTAL concurrent difft
+    // processes across every in-flight evaluation, not just this one.
+    const release = await acquireDifftSlot();
+    try {
+      await run(cfg.difftasticBin, ["--exit-code", "--display", "json", approvedTmp, headTmp], {
+        timeout: 30000,
+        maxBuffer: 10 * 1024 * 1024
+      });
+    } finally {
+      release();
+    }
+
     return false; // exit 0 → no structural change
   } catch (e: any) {
     if (e && e.code === 1) return true;                 // structural change

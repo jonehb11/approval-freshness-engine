@@ -51,7 +51,7 @@ describe("evaluateFreshApproval (pure decision function)", () => {
       expect(r).toEqual({ qualify: true, reason: "qualified" });
     });
 
-    it("qualifies: review.state case variance is tolerated (GitHub payload variance, F4)", () => {
+    it("qualifies: review.state case variance is tolerated (GitHub payload variance)", () => {
       expect(evaluateFreshApproval(basePayload({ reviewState: "APPROVED" })).qualify).toBe(true);
       expect(evaluateFreshApproval(basePayload({ reviewState: "Approved" })).qualify).toBe(true);
     });

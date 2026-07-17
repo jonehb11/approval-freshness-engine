@@ -147,7 +147,7 @@ jobs:
           fi
           echo "current=true" >> "$GITHUB_OUTPUT"
 
-      # Only ever writes `conclusion: success`. Per F5 (neutral/skipped
+      # Only ever writes `conclusion: success`. GitHub treats neutral/skipped as PASSING (they
       # SATISFY a required check and must never be emitted; and this
       # fallback's action space excludes `failure` entirely — that stays the
       # primary engine's job) the conclusion here is a hardcoded literal, not

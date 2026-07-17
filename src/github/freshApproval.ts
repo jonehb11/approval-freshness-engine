@@ -132,7 +132,7 @@ export interface FreshApprovalContext {
  * anything. It is a pure no-op. A review that doesn't meet the bar is not evidence the approval
  * is stale — it is simply not a fresh-approval event, so the check is left exactly as the
  * DISMISS/PRESERVE ladder last set it (or as GitHub's default "no check" state, which already
- * blocks merge per F1). This handler contains no path that creates or submits a review — its
+ * blocks merge — required checks are matched per head SHA). This handler contains no path that creates or submits a review — its
  * entire GitHub write surface is a single check-run success write, delegated to the actuator.
  *
  * @param payload - The pull_request_review webhook payload (action === "submitted").

@@ -1,0 +1,21 @@
+# Build only ever needs src/, package*.json, tsconfig.json (see Dockerfile).
+# Everything below is excluded to keep the build context minimal — smaller
+# upload to the daemon, cleaner layers, and a change to e.g. docs/ or test/
+# never busts the COPY-layer cache for an unrelated image rebuild.
+node_modules
+dist
+.git
+docs
+test
+eval
+scripts
+deploy
+*.md
+.github
+coverage
+npm-debug.log
+
+# Same category of "never belongs in
+# a build context or an image": local env/secrets and OS/editor cruft.
+.env
+.DS_Store

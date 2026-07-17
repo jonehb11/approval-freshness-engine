@@ -41,10 +41,12 @@ Status checks are matched strictly per head SHA — a success on a previous comm
 - `src/github/` — App auth, PR/delta resolution, the actuator (check success/failure + dismiss; no approve path), and the fresh-approval echo (`freshApproval.ts`)
 - `src/model/` — provider-agnostic classifier + versioned control-logic prompt
 - `src/audit/` — immutable decision events → Loki audit tenant
+- `src/runtime/` — the keyed, coalescing, bounded work queue (`queue.ts`) that serializes evaluation per PR and bounds concurrency under load — see [Performance & scale](#performance--scale)
+- `src/observability/` — Prometheus registry and metrics (`prom-client`) served at `/metrics`
 - `scripts/p0_backfill.ts` — **read-only** evidence spike → "the number"
 - `eval/` — golden-set harness (the security evidence)
 - `docs/` — See [Documentation](#documentation) below
-- `deploy/` — Helm + Terraform + the static, org-owned ruleset (`deploy/rulesets/`) that is the actual merge gate — never edited at runtime by any automation
+- `deploy/` — Helm (Deployment/Service/HPA/PDB/Ingress) + Terraform + the static, org-owned ruleset (`deploy/rulesets/`) that is the actual merge gate — never edited at runtime by any automation
 - `.github/workflows/fresh-approval-fallback.yaml` — redundant, GitHub-infra-hosted fresh-approval echo (liveness path independent of the engine's uptime)
 
 ## Documentation
@@ -81,7 +83,7 @@ Create a new GitHub App in your org (`Settings → Developer settings → GitHub
   Actions, Workflows, Members, or any org permission. The App must be *unable* to merge, push,
   or edit rulesets even if its key leaks.
 - **Webhook:** URL → your engine's ingress `/webhook`; generate a strong webhook secret.
-  Subscribe to events: `pull_request`, `pull_request_review`, `push`.
+  Subscribe to events: `pull_request`, `pull_request_review`, `push` (the `push` event feeds the force-push `forced` flag into the ladder wiring at deploy time; the scaffold routes only the first two).
 - **Record two values:** the **App ID** (numeric, on the App settings page — this is also the
   `integration_id` for step 4) and the **private key** (generate and download once).
 - **Install** the App on your org, scoped to **only the repos you will enroll** — never
@@ -161,6 +163,67 @@ Set up the drift-monitoring query from `deploy/rulesets/README.md` (alert on any
 change — a monitoring aid, never an auto-repair), and read `docs/RUNBOOK.md`: the "engine
 down" procedure is deliberately *"nothing is required for safety — fix the pod at leisure;
 developers unblock themselves with a fresh review."*
+
+## Performance & scale
+
+The engine has to keep up with many PRs pushing and being reviewed in parallel without either
+wedging on a slow one or racing itself on a fast one. This is a queueing problem, not a bigger-box
+problem, so scale lives in `src/runtime/queue.ts`, not in replica count alone.
+
+**The queue is the scale core.** Every webhook event is enqueued under a key of
+`${owner}/${repo}#${prNumber}` before it's evaluated, with three properties that fall directly out
+of the merge equation above:
+- **Coalescing.** If a task for a key is still *waiting* (not yet started) when another event for
+  the same key arrives, the new task replaces it — the superseded task is dropped, not run. This
+  is safe, not just fast: required checks are matched strictly per head SHA (see above), so
+  evaluating a SHA that a later push has already superseded is pure waste. A burst of pushes to
+  the same PR costs one evaluation, not N.
+- **Per-key serialization.** Two tasks for the same key never run concurrently. This is what
+  keeps a `synchronize` evaluation and a `pull_request_review` fresh-approval echo on the same PR
+  from racing each other's GitHub API calls — both event types are routed through the same key
+  for exactly this reason.
+- **Bounded concurrency and size.** A global cap (`AFE_WORKER_CONCURRENCY`, default 16) limits
+  how many tasks run at once; a bounded pending-key limit (`AFE_QUEUE_MAX_PENDING`, default 1000)
+  caps memory under a webhook storm. Overflow is a **rejection, not a crash** — the webhook was
+  already 202'd, so an unprocessed event just leaves the check missing, i.e. a blocked merge, the
+  same safe-but-slow state a lost webhook already leaves (recoverable by reconciliation or a fresh
+  re-review, same as any other outage — see the runbook above).
+
+**Graceful shutdown is drain, not kill.** On `SIGTERM` (rolling update, scale-down, node drain),
+the server flips `/readyz` to `503` immediately — so the Service stops routing new traffic — then
+waits for in-flight queue work to finish, up to `AFE_SHUTDOWN_GRACE_MS` (default 25s), before
+exiting cleanly. Work that's still running when the grace period ends is simply abandoned, and
+that is fine **by construction**: an unresolved check is exactly as safe as a `failure` one (§"the
+fail-safe story" above), so an undrained task never produces an unsafe state — it just leaves that
+one PR blocked a little longer, no different from any other lost job. The Helm chart keeps
+`terminationGracePeriodSeconds: 30` above the drain budget so Kubernetes' SIGKILL can never land
+mid-drain, and there's deliberately no `preStop` hook — the distroless image has no shell to exec
+one in, so the drain has to (and does) live entirely in application code.
+
+**The health contract**, used by both Kubernetes and the Helm defaults below:
+- `GET /healthz` — liveness: the process is up. Independent of backlog — it only trips on a true
+  hang, never on "busy."
+- `GET /readyz` — readiness: `200` while accepting work, `503` from the instant shutdown begins.
+  This is the single signal that pulls a draining pod out of the Service's endpoints.
+- `GET /metrics` — Prometheus exposition (`prom-client`): default process metrics plus
+  `afe_webhooks_total{event,outcome}`, `afe_queue_running`/`afe_queue_waiting` gauges,
+  `afe_queue_coalesced_total`, `afe_queue_rejected_total`, `afe_task_failures_total`, and
+  `afe_task_duration_seconds{kind}`.
+
+**Autoscaling and disruption budgets** (`deploy/helm/values.yaml`) default to `minReplicas: 2` /
+`maxReplicas: 10` at 70% CPU (`autoscaling.*`, gated on `autoscaling.enabled`), plus a
+`PodDisruptionBudget` with `minAvailable: 1` (`pdb.enabled`, default true) so voluntary
+disruptions — node drains, rolling updates — can never take the webhook receiver to zero capacity.
+Combined with `rollingUpdate.maxUnavailable: 0` on the Deployment, capacity never dips during a
+deploy either; the surge replica absorbs it instead.
+
+**difftastic ships inside the image**, not as a runtime fetch: the container build downloads a
+pinned, checksum-verified difftastic release binary for the target arch and copies it into the
+final distroless stage (`DIFFT_BIN=/usr/local/bin/difft`) — no network dependency, no version
+drift, no shell available at runtime to fetch one anyway. Stage 1's temp blobs
+(`materializeBlobs`) are written under `/tmp`, the one writable path on an otherwise
+`readOnlyRootFilesystem` container, backed by a size-capped `emptyDir` (`tmp`, 256Mi) that's wiped
+with the pod on every restart.
 
 ## Build honesty
 Scaffold written for review clarity; `loadConfig()`, blob materialization, and the model

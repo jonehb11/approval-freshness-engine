@@ -1,35 +1,9 @@
 import { Octokit } from "@octokit/rest";
 import { Action, Decision } from "../stages/types.js";
 import { auditDecision } from "../audit/logger.js";
-
-// Helper to handle GitHub API rate limits (primary and secondary)
-// Uses exponential backoff and respects rate limit headers.
-async function withRateLimit<T>(action: () => Promise<T>): Promise<T> {
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      return await action();
-    } catch (e: any) {
-      if (e.status === 403 && e.response?.headers) {
-        const reset = e.response.headers['x-ratelimit-reset'];
-        const retryAfter = e.response.headers['retry-after'];
-        // Handle secondary rate limits (retry-after)
-        if (retryAfter) {
-          const delay = parseInt(retryAfter, 10) * 1000;
-          await new Promise(r => setTimeout(r, delay));
-          continue;
-        } 
-        // Handle primary rate limits (x-ratelimit-reset)
-        else if (reset && e.response.headers['x-ratelimit-remaining'] === '0') {
-          const delay = Math.max(0, parseInt(reset, 10) * 1000 - Date.now()) + 1000;
-          await new Promise(r => setTimeout(r, delay));
-          continue;
-        }
-      }
-      throw e;
-    }
-  }
-  throw new Error("GitHub API rate limit retries exhausted.");
-}
+// withRateLimit used to be defined here (byte-for-byte duplicated in pr.ts too). It now lives
+// in client.ts as the single implementation; both files import it. Behavior unchanged.
+import { withRateLimit } from "./client.js";
 
 // The ONLY component that writes to GitHub. By construction it can:
 //   - set the check-run result
@@ -137,7 +111,7 @@ async function setCheck(ctx: ActuationContext, conclusion: "success" | "failure"
  * Sets the check-run to a pending ("in_progress") status, used on push receipt so developers
  * see the engine is actively evaluating the new head SHA rather than assuming nothing is
  * happening.
- * Fail-Closed Invariant: This is UX only, never a safety mechanism. Per F1 (required status
+ * Fail-Closed Invariant: This is UX only, never a safety mechanism. Because (per GitHub semantics) required status
  * checks are matched strictly per head SHA), a brand-new head SHA never inherits a completed
  * check from any prior SHA — it starts with no check run at all, which already blocks merge.
  * Writing "in_progress" here does not change that: "in_progress" is not a completed status,

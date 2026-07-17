@@ -325,28 +325,48 @@ A corpus of malicious deltas: prompt injection in comments, payload-after-approv
 
 ### 9.1 Topology
 Fits the existing GitOps component model (deploy as a `components/approval-freshness-engine/` opt-in on the shared-services hub, or the platform cluster that already terminates GitHub webhooks).
-- Webhook receiver: 2+ replicas behind the platform's internal/External ingress (public path required for GitHub → receiver; terminate TLS at the edge, verify HMAC at the app).
-- Worker: same process for P0 (in-proc queue); split to SQS-backed workers for HA.
+- Webhook receiver: HPA-managed, `minReplicas: 2`–`maxReplicas: 10` on 70% CPU (`autoscaling.*`, gated `autoscaling.enabled`) behind the platform's internal/External ingress (public path required for GitHub → receiver; terminate TLS at the edge, verify HMAC at the app). A `PodDisruptionBudget` (`minAvailable: 1`, `pdb.enabled`) plus `rollingUpdate.maxUnavailable: 0` keep capacity from dipping during node drains or deploys.
+- Worker: in-process, per-pod queue (`src/runtime/queue.ts`) — keyed by `${repo}#${prNumber}`, coalescing (a waiting task is replaced by the next push for the same PR, never both run), per-key serialized (an evaluation and a fresh-approval echo on the same PR never race each other's API calls), and globally bounded (`AFE_WORKER_CONCURRENCY` running / `AFE_QUEUE_MAX_PENDING` waiting, both env-tunable via `engine.*` values). Still P0-shaped (no SQS), but now bounded and observable rather than unbounded; SQS-backed workers remain the option if per-pod bounded concurrency stops being enough at higher volume.
+- Shutdown: `SIGTERM` flips `/readyz` to `503` immediately (Service stops routing), then drains in-flight queue work up to `AFE_SHUTDOWN_GRACE_MS` (default 25s) before exiting 0 — undrained work is fail-closed by construction (§4.3), never unsafe. The distroless final image has no shell, so there is deliberately **no `preStop` hook** (an exec `sleep` preStop is impossible without one); `terminationGracePeriodSeconds: 30` in the chart is kept above the drain budget so kubelet's SIGKILL never lands mid-drain.
 - Secrets: App private key + webhook secret via ESO → Secrets Manager (Pod Identity), never in Git.
 - Model access: Bedrock via Pod-Identity IAM role (in-boundary, preferred) OR Anthropic API key via ESO (zero-retention tier). Chosen in P0 per data policy.
 
-### 9.2 Helm values (sketch)
+### 9.2 Helm values (sketch — see `deploy/helm/values.yaml` for the live version)
 ```yaml
-replicaCount: 2
+replicaCount: 2                    # floor; autoscaling.* (below) manages it in practice
 image: { repository: ghcr.io/<org>/approval-freshness-engine, tag: <pinned> }
-serviceAccount: { name: afe }   # Pod Identity → afe-role (Bedrock + Secrets)
+serviceAccount: { name: afe }      # Pod Identity → afe-role (Bedrock + Secrets)
 ingress: { enabled: true, host: afe.internal.<domain>, path: /webhook }
 env:
+  MODE: shadow                     # shadow → deterministic-live → full, per rollout phase
   MODEL_PROVIDER: bedrock          # or anthropic
   MODEL_ID: <model>
+engine:
+  workerConcurrency: 16            # → AFE_WORKER_CONCURRENCY, max concurrent per-PR tasks
+  queueMaxPending: 1000            # → AFE_QUEUE_MAX_PENDING, bounded queue (fail-closed overflow)
+  shutdownGraceMs: 25000           # → AFE_SHUTDOWN_GRACE_MS, drain budget on SIGTERM
 externalSecrets:
-  - name: afe-github-app           # app_id, private_key, webhook_secret
+  githubApp: afe-github-app        # app_id, private_key, webhook_secret
 config:                            # denylist/thresholds mounted from ConfigMap (Git)
   denylistConfigMap: afe-denylist
 observability:
   logsTenant: audit                # Loki audit tenant
-  metricsEnabled: true
+  metricsEnabled: true             # also gates prometheus.io/* scrape annotations (pod + Service)
+resources:
+  requests: { cpu: 250m, memory: 256Mi }
+  limits:   { cpu: "1", memory: 768Mi }   # I/O-bound steady state; difftastic subprocess bursts CPU
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPU: 70
+pdb:
+  enabled: true                    # minAvailable: 1
 ```
+Probes: `livenessProbe` → `GET /healthz` (process up); `readinessProbe` → `GET /readyz` (accepting
+work, `503` once shutdown begins) — previously both pointed at `/healthz`, which meant a hung
+process and a draining-but-healthy one were indistinguishable to Kubernetes. See
+[README § Performance & scale](../README.md#performance--scale) for the full contract.
 
 ### 9.3 Rollout gates (from the epic, restated as ship criteria)
 - **P0** read-only backfill → the % number. No write scopes granted yet.
@@ -360,6 +380,8 @@ observability:
 ## 10. Observability & SLOs
 Reuses the platform LGTM stack.
 - **Metrics (Mimir):** `afe_decisions_total{stage,action,reason}`, `afe_stage2_invocations_total`, `afe_preserve_rate`, `afe_false_preserve_findings_total` (from audit sampling), `afe_model_latency_seconds`, `afe_model_cost_usd_total`, `afe_fail_closed_activations_total`, `afe_pending_reaped_total`, `afe_webhook_verify_failures_total`.
+- **Queue/runtime metrics** (`src/observability/metrics.ts`, `prom-client`, scraped at `GET /metrics`): `afe_webhooks_total{event,outcome=verified|bad_signature|bad_json|payload_too_large|ignored}`, `afe_queue_running`/`afe_queue_waiting` gauges, `afe_queue_coalesced_total`, `afe_queue_rejected_total`, `afe_task_failures_total`, `afe_task_duration_seconds{kind=fresh_approval|synchronize}`, plus Node/process default metrics. Scrape is annotation-driven (`prometheus.io/scrape|port|path`, gated `observability.metricsEnabled`) on the pod template (the standard Prometheus pattern; the Service carries no scrape annotations).
+- **Health endpoints:** `GET /healthz` (liveness — process up) and `GET /readyz` (readiness — accepting work, `503` once shutdown begins) back the Helm probes (§9.2) and the Service's endpoint membership.
 - **Logs (Loki audit tenant):** one structured event per decision (§src/audit fields).
 - **Dashboard (Grafana):** decision funnel (how many resolved at each stage), preserve-rate trend, cost/PR, latency, fail-closed activations, audit-finding count.
 - **Alerts:** engine error rate > X; fail-closed activation spike; anomalous preserve-rate swing (drift detector); webhook-verify failures (possible spoofing); model cost anomaly.

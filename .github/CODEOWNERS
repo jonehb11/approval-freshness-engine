@@ -52,6 +52,14 @@
 # The immutable audit trail (tampering here hides evidence of decisions).
 /src/audit/                        @YOUR-ORG/security-review
 
+# The prod-hardening work queue: coalescing/serialization/concurrency-bound scheduling that
+# decides when and in what order PR evaluations run (a compromised queue could reorder, drop,
+# or duplicate evaluations — as much control surface as the stages it schedules).
+/src/runtime/                      @YOUR-ORG/security-review
+
+# Metrics/observability wiring, instrumented directly into the queue + webhook hot path.
+/src/observability/                @YOUR-ORG/security-review
+
 # The invariant proofs (no-approve path + check-conclusion guard).
 /test/no_approve_path.test.ts      @YOUR-ORG/security-review
 /test/check_conclusion_guard.test.ts @YOUR-ORG/security-review

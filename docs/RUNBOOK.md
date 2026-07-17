@@ -8,6 +8,10 @@ blocked as any other required check that stopped reporting would leave it — an
 approval on the current head SHA always clears it, engine or no engine.
 
 ## The operating tiers (know which one you're in — dashboard `afe_current_mode`)
+> Build honesty: the Tier-2 circuit breaker and its metrics (`afe_current_mode`,
+> `afe_circuit_breaker_state`) describe the target design and ship with the Stage-2 model
+> wiring — they are not implemented in the current scaffold. Tiers 1 and 3 behave as written
+> today. Currently-shipped metrics are listed in IMPLEMENTATION-PLAN §10.
 - **Tier 1 Healthy:** full ladder; trivial pushes preserved.
 - **Tier 2 Model degraded:** circuit breaker → deterministic-only (Stage 0/1 still preserve; rest dismiss). Auto-recovers.
 - **Tier 3 Engine down:** nothing reverts. Enrolled PRs sit on the required check until it's satisfied — by the engine coming back, or by a fresh human approval echoed via the fallback workflow.

@@ -1,4 +1,4 @@
-import { minimatch } from "minimatch";
+import { Minimatch } from "minimatch";
 import { Decision, Delta, dismiss, ReasonCode } from "./types.js";
 import { EngineConfig } from "../config/schema.js";
 
@@ -30,9 +30,74 @@ export const SELF_GOVERNANCE_GLOBS: string[] = [
   "src/github/**",
   "src/index.ts",
   "src/audit/**",
+  // Prod-hardening runtime core: the coalescing/serializing/bounded work queue that decides
+  // WHEN and IN WHAT ORDER PR evaluations run. A compromised queue could reorder, drop, or
+  // duplicate evaluations across parallel PRs (e.g. resurrect a superseded/coalesced task, or
+  // let two same-key tasks race between an evaluation and the fresh-approval echo) — that is
+  // as much control surface as the stages it schedules. Added together with .github/CODEOWNERS
+  // (bidirectional sync-guard test in test/self_governance.test.ts).
+  "src/runtime/**",
+  // Metrics/observability wiring is instrumented directly into the queue + webhook hot path
+  // (task outcomes, coalesce/reject counts) — grouped with src/runtime/** for the same reason.
+  "src/observability/**",
   "test/no_approve_path.test.ts",
   "test/check_conclusion_guard.test.ts",
 ];
+
+// Shared match options for every glob compiled below: dot (match dotfiles like .github/), nocase
+// (case-insensitive — see the [FIX] comments at each call site below for why casing evasion
+// matters). Identical to the inline `{ dot: true, nocase: true }` literals this replaces.
+const MATCH_OPTS = { dot: true, nocase: true };
+
+/**
+ * Precompiled Minimatch instances for one EngineConfig object. `minimatch(file, glob, opts)`
+ * recompiles the glob's regex on every single call, and stage0 calls it up to file × glob times
+ * per evaluation. This cache compiles each glob list to Minimatch instances once per distinct
+ * EngineConfig object reference and reuses them across every stage0() call that receives that
+ * same config — pure micro-perf, zero behavior change: same pattern strings, same options, same
+ * `.match(file)` semantics as the `minimatch(file, glob, opts)` calls it replaces.
+ */
+interface CompiledMatchers {
+  selfGovernance: Minimatch[];
+  denylist: Minimatch[];
+  codeowners: Minimatch[];
+}
+
+// Keyed by EngineConfig object identity (not content) — a WeakMap so a config object no longer
+// referenced anywhere else (e.g. after a config reload in a long-running process) doesn't pin
+// its compiled matchers in memory forever.
+const matcherCache = new WeakMap<EngineConfig, CompiledMatchers>();
+
+// SELF_GOVERNANCE_GLOBS is a module-level constant independent of any EngineConfig, so it is
+// compiled once, lazily (not eagerly at import time, to keep this module side-effect-free until
+// stage0() actually runs), and shared across every config's CompiledMatchers.
+let compiledSelfGovernanceGlobs: Minimatch[] | null = null;
+function getSelfGovernanceMatchers(): Minimatch[] {
+  if (!compiledSelfGovernanceGlobs) {
+    compiledSelfGovernanceGlobs = SELF_GOVERNANCE_GLOBS.map((g) => new Minimatch(g, MATCH_OPTS));
+  }
+  return compiledSelfGovernanceGlobs;
+}
+
+function getCompiledMatchers(cfg: EngineConfig): CompiledMatchers {
+  let compiled = matcherCache.get(cfg);
+  if (!compiled) {
+    compiled = {
+      selfGovernance: getSelfGovernanceMatchers(),
+      denylist: cfg.denylist.paths.map((g) => new Minimatch(g, MATCH_OPTS)),
+      codeowners: (cfg.codeownersGlobs ?? []).map((g) => new Minimatch(g, MATCH_OPTS)),
+    };
+    matcherCache.set(cfg, compiled);
+  }
+  return compiled;
+}
+
+// Test-only observability hook: lets tests assert the WeakMap cache above is actually reused
+// across repeated stage0() calls that pass the same EngineConfig object reference, without
+// exposing the compiled Minimatch internals themselves. Not read by any runtime code path.
+export function __stage0MatcherCacheHasForTest(cfg: EngineConfig): boolean {
+  return matcherCache.has(cfg);
+}
 
 /**
  * Stage 0: deterministic categorical dismissal. NO model. NO network.
@@ -45,6 +110,10 @@ export const SELF_GOVERNANCE_GLOBS: string[] = [
  * @returns A DISMISS Decision if a hard rule trips, or null if it is safe to proceed.
  */
 export function stage0(delta: Delta, cfg: EngineConfig): Decision | null {
+  // Lazily compiled + cached per cfg object identity (see getCompiledMatchers above); reused by
+  // both rule 0 (self-governance) and rule 4 (denylist/codeowners) below.
+  const matchers = getCompiledMatchers(cfg);
+
   // 0. Self-governance: the engine cannot grade changes to its OWN control surface.
   // The engine always evaluates against DEPLOYED config (a PR can never loosen the rules it is
   // judged under mid-flight); this rule closes the remaining boundary — the engine never
@@ -52,12 +121,11 @@ export function stage0(delta: Delta, cfg: EngineConfig): Decision | null {
   // ruleset. SELF_GOVERNANCE_GLOBS is a code constant (not config) so mutable config cannot
   // widen what the engine is allowed to self-grade. nocase guards against casing-evasion.
   if (cfg.selfGovernedRepos.includes(delta.repo)) {
-    const selfMatchOpts = { dot: true, nocase: true };
     for (const file of delta.changedFiles) {
-      for (const glob of SELF_GOVERNANCE_GLOBS) {
-        if (minimatch(file, glob, selfMatchOpts)) {
+      for (const m of matchers.selfGovernance) {
+        if (m.match(file)) {
           return dismiss(0, "self_governance",
-            `Changed file ${file} is part of the engine's own control surface (matched ${glob}); the engine does not evaluate changes to its own control surface; human review required.`);
+            `Changed file ${file} is part of the engine's own control surface (matched ${m.pattern}); the engine does not evaluate changes to its own control surface; human review required.`);
         }
       }
     }
@@ -97,15 +165,14 @@ export function stage0(delta: Delta, cfg: EngineConfig): Decision | null {
   // 4. Privileged-path denylist — ANY match dismisses, before any AI can ever see it.
   // [FIX] Logic Bypass: nocase must be true. Attackers can evade path-based denylists
   // on many platforms simply by changing the filename casing (e.g., .Github/workflows).
-  const matchOpts = { dot: true, nocase: true };
   for (const file of delta.changedFiles) {
-    for (const glob of cfg.denylist.paths) {
-      if (minimatch(file, glob, matchOpts)) {
-        return dismiss(0, "denylist_path", `Privileged path changed: ${file} (matched ${glob}).`);
+    for (const m of matchers.denylist) {
+      if (m.match(file)) {
+        return dismiss(0, "denylist_path", `Privileged path changed: ${file} (matched ${m.pattern}).`);
       }
     }
-    for (const glob of cfg.codeownersGlobs ?? []) {
-      if (minimatch(file, glob, matchOpts)) {
+    for (const m of matchers.codeowners) {
+      if (m.match(file)) {
         return dismiss(0, "codeowners_path", `CODEOWNERS-governed path changed: ${file}.`);
       }
     }

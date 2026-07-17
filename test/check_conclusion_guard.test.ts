@@ -38,7 +38,7 @@ function stripComments(src: string): string {
 // This test statically scans every source file (comments stripped) for those two literals
 // appearing as quoted string tokens, so a future edit — even one that doesn't touch
 // actuator.ts — cannot reintroduce them anywhere in src/.
-describe("invariant: engine check conclusions are exactly {success, failure} (F5 fail-open guard)", () => {
+describe("invariant: engine check conclusions are exactly {success, failure} (fail-open guard)", () => {
   const allFiles = getAllFiles(SRC_DIR);
 
   it("scanned at least one file (sanity check the scan itself is not vacuous)", () => {

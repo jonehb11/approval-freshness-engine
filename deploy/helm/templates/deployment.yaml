@@ -4,24 +4,88 @@ metadata:
   name: {{ .Release.Name }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    # webhook receiver must never dip below capacity mid-rollout — surge instead of draining first
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
   selector: { matchLabels: { app: {{ .Release.Name }} } }
   template:
-    metadata: { labels: { app: {{ .Release.Name }} } }
+    metadata:
+      labels: { app: {{ .Release.Name }} }
+      {{- if .Values.observability.metricsEnabled }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: /metrics
+      {{- end }}
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
+      # > AFE_SHUTDOWN_GRACE_MS (engine.shutdownGraceMs, default 25s) so kubelet never SIGKILLs
+      # a pod mid-drain — see the lifecycle comment on the container below.
+      terminationGracePeriodSeconds: 30
+      securityContext: # pod-level — distroless nonroot uid everywhere
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+        fsGroup: 65532
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: {{ .Release.Name }} } }
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector: { matchLabels: { app: {{ .Release.Name }} } }
       containers:
         - name: engine
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          ports: [{ containerPort: 3000 }]
+          ports: [{ name: http, containerPort: 3000 }]
           env:
             - { name: MODE, value: "{{ .Values.env.MODE }}" }
             - { name: MODEL_PROVIDER, value: "{{ .Values.env.MODEL_PROVIDER }}" }
             - { name: MODEL_ID, value: "{{ .Values.env.MODEL_ID }}" }
+            - { name: AFE_BUILD_COMMIT, value: "{{ .Values.image.tag }}" } # surfaces as afe_build_info{commit}
+            - { name: AFE_WORKER_CONCURRENCY, value: "{{ .Values.engine.workerConcurrency }}" }
+            - { name: AFE_QUEUE_MAX_PENDING, value: "{{ .Values.engine.queueMaxPending }}" }
+            - { name: AFE_SHUTDOWN_GRACE_MS, value: "{{ .Values.engine.shutdownGraceMs }}" }
           envFrom:
             - secretRef: { name: {{ .Values.externalSecrets.githubApp }} }
+          # deployment.yaml previously never rendered this, so requests/limits were
+          # silently unused regardless of what values.yaml set.
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext: # container-level — minimal syscall/priv surface, distroless uid
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+            runAsUser: 65532
+            runAsGroup: 65532
           volumeMounts:
             - { name: config, mountPath: /etc/afe }
-          readinessProbe: { httpGet: { path: /healthz, port: 3000 } }
+            # stage1 materializeBlobs writes difftastic temp files; readOnlyRootFilesystem
+            # above means the only writable path is this explicit emptyDir.
+            - { name: tmp, mountPath: /tmp }
+          livenessProbe: # process is up — never trips on backlog, only on a true hang
+            httpGet: { path: /healthz, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe: # accepting work — flips 503 the instant SIGTERM starts draining
+            httpGet: { path: /readyz, port: 3000 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 2
+          # No preStop hook, deliberately: the distroless base has no shell, so an exec preStop
+          # (e.g. `sleep`) cannot run here — this is the classic distroless gotcha. Drain instead
+          # happens entirely in-process: SIGTERM flips /readyz to 503 immediately (Service removes
+          # the endpoint), then the app awaits queue.drain(AFE_SHUTDOWN_GRACE_MS) before exiting 0.
+          # terminationGracePeriodSeconds (30s) is kept comfortably above the drain budget (25s) so
+          # kubelet's SIGKILL never lands mid-drain.
       volumes:
         - name: config
           configMap: { name: {{ .Values.config.denylistConfigMap }} }
+        - name: tmp
+          emptyDir: { sizeLimit: 256Mi } # difftastic scratch space, wiped with the pod

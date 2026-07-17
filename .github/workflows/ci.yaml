@@ -1,11 +1,17 @@
 name: ci
 on: [push, pull_request]
+# Defense in depth: nothing in this workflow writes to the repo, so say so explicitly rather
+# than inheriting the default token permissions.
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # Pinned by full commit SHA, not a mutable tag, matching the pinning discipline used by
+      # the docker/npm-audit jobs below and .github/workflows/fresh-approval-fallback.yaml.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with: { node-version: '20' }
       - run: npm ci
       - run: npm run build
@@ -14,9 +20,49 @@ jobs:
   prompt-guard:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       # If the control-logic prompt changed, require the eval label + full suite.
       - run: |
           if git diff --name-only origin/main...HEAD | grep -q 'src/model/prompt.ts'; then
             echo "::warning::prompt.ts (control logic) changed — eval + adversarial suite must pass and security must review";
           fi
+
+  # Build-only proof that the production Dockerfile (corrected CMD path, pinned digests,
+  # checksum-verified difftastic fetch) actually produces an image — never pushed
+  # from CI; publishing is a separate, deliberate release step out of scope here.
+  # GHA-cache (cache-from/cache-to type=gha) keeps rebuilds fast across the
+  # npm-ci/build layers that don't change between commits.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Advisory, non-blocking: a disclosed CVE in a transitive dependency shouldn't
+  # itself block an otherwise-safe PR from merging (that's what --audit-level=high
+  # plus continue-on-error buys here) — but it must be visible, not silent, hence
+  # the explicit ::warning annotation on top of the (already non-fatal) job status.
+  # Security triages findings out of band; this job never gates the merge queue.
+  npm-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: '20' }
+      - run: npm ci
+      - name: npm audit (advisory, non-blocking)
+        continue-on-error: true
+        run: |
+          set +e
+          npm audit --omit=dev --audit-level=high
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "::warning::npm audit found high/critical advisories in production dependencies (exit ${status}) — see job log; triage out of band, this never blocks merge."
+          fi
+          exit "$status"

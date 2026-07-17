@@ -12,13 +12,27 @@ env:
   MODE: shadow                 # shadow → deterministic-live → full, per rollout phase
   MODEL_PROVIDER: bedrock      # or anthropic
   MODEL_ID: ""
+engine:
+  workerConcurrency: 16        # AFE_WORKER_CONCURRENCY — max concurrently-running per-PR tasks
+  queueMaxPending: 1000        # AFE_QUEUE_MAX_PENDING — bounded queue; overflow rejects (fail-closed, never crashes)
+  shutdownGraceMs: 25000       # AFE_SHUTDOWN_GRACE_MS — drain budget on SIGTERM; keep < terminationGracePeriodSeconds
 externalSecrets:
   githubApp: afe-github-app     # app_id, private_key, webhook_secret from Secrets Manager
 config:
   denylistConfigMap: afe-denylist
 observability:
-  logsTenant: audit
+  logsTenant: audit   # reserved: consumed by the platform log-shipping config, not by any template in this chart
   metricsEnabled: true
 resources:
-  requests: { cpu: 100m, memory: 256Mi }
-  limits:   { cpu: 500m, memory: 512Mi }
+  # webhook handling is I/O-bound (small requests, mostly waiting on GitHub's API); difftastic
+  # subprocess calls burst CPU per evaluation — limits sized above requests to absorb bursts
+  # without throttling steady-state traffic.
+  requests: { cpu: 250m, memory: 256Mi }
+  limits:   { cpu: "1", memory: 768Mi }
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPU: 70                # % — headroom for the difftastic bursts noted above
+pdb:
+  enabled: true                 # minAvailable: 1 — see templates/pdb.yaml

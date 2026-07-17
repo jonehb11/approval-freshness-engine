@@ -1,34 +1,8 @@
 import { Octokit } from "@octokit/rest";
 import { Delta } from "../stages/types.js";
-
-// Helper to handle GitHub API rate limits (primary and secondary)
-// Uses exponential backoff and respects rate limit headers.
-async function withRateLimit<T>(action: () => Promise<T>): Promise<T> {
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      return await action();
-    } catch (e: any) {
-      if (e.status === 403 && e.response?.headers) {
-        const reset = e.response.headers['x-ratelimit-reset'];
-        const retryAfter = e.response.headers['retry-after'];
-        // Handle secondary rate limits (retry-after)
-        if (retryAfter) {
-          const delay = parseInt(retryAfter, 10) * 1000;
-          await new Promise(r => setTimeout(r, delay));
-          continue;
-        } 
-        // Handle primary rate limits (x-ratelimit-reset)
-        else if (reset && e.response.headers['x-ratelimit-remaining'] === '0') {
-          const delay = Math.max(0, parseInt(reset, 10) * 1000 - Date.now()) + 1000;
-          await new Promise(r => setTimeout(r, delay));
-          continue;
-        }
-      }
-      throw e;
-    }
-  }
-  throw new Error("GitHub API rate limit retries exhausted.");
-}
+// withRateLimit used to be defined here (byte-for-byte duplicated in actuator.ts too). It now
+// lives in client.ts as the single implementation; both files import it. Behavior unchanged.
+import { withRateLimit } from "./client.js";
 
 /**
  * Resolves the approved state and builds the Delta object.
@@ -42,7 +16,7 @@ async function withRateLimit<T>(action: () => Promise<T>): Promise<T> {
  * @param approvedSha - The commit SHA that was approved.
  * @param headSha - The current PR head SHA.
  * @param opts - opts.webhookForced is the push event payload's `forced` flag as reported by
- *   the caller. The push-event handler passes it through; the pull_request "synchronize" path
+ *   the caller. A push-event handler (deploy-time ladder wiring; not yet routed in src/index.ts) passes it through; the pull_request "synchronize" path
  *   has no such flag and passes false, relying instead on the compare-status corroboration
  *   below (defense in depth: history rewrites are detected even if the push webhook was lost).
  * @returns A promise resolving to the unified Delta object.
