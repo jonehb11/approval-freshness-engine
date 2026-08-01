@@ -29,6 +29,17 @@ export async function evaluate(delta: Delta, cfg: EngineConfig): Promise<Decisio
     const s1 = await stage1(delta, cfg);
     if (s1) return s1;
 
+    // Deterministic-only mode (cfg.stage2Enabled === false): the model is never consulted and
+    // anything Stage 1 could not prove null dismisses to human re-review. This is the strictest
+    // posture the engine has, it is what rollout phase P2 runs under, and it is what makes
+    // "deterministic-only" a real config switch rather than a documented aspiration. Placed
+    // AFTER stages 0-1 on purpose: the deterministic preserves (ast_identical, trivial_class,
+    // merge_base_only) still apply — only the discretionary layer is withheld.
+    if (!cfg.stage2Enabled) {
+      return dismiss(2, "deterministic_only_mode",
+        "Deterministic-only mode: the change is not provably null and the advisory classifier is disabled, so human re-review is required.");
+    }
+
     // Stage 2 — advisory model + corroboration gates. Always terminal.
     return await stage2(delta, cfg);
   } catch (e: any) {

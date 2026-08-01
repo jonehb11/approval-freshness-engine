@@ -29,6 +29,11 @@ export const SELF_GOVERNANCE_GLOBS: string[] = [
   // any future file added here is control surface by default rather than by remembering.
   "src/github/**",
   "src/index.ts",
+  // The host-independent evaluation entry point (approval resolution → delta → ladder →
+  // actuate) shared by the server and the Lambda adapter, and the Lambda deployment shape
+  // itself (receiver, App-identity auth wiring, and the build that decides what code runs).
+  "src/engine.ts",
+  "deploy/lambda/**",
   "src/audit/**",
   // Prod-hardening runtime core: the coalescing/serializing/bounded work queue that decides
   // WHEN and IN WHAT ORDER PR evaluations run. A compromised queue could reorder, drop, or

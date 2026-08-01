@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { unlink } from "node:fs/promises";
-import { availableParallelism } from "node:os";
+import { unlink, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { availableParallelism, tmpdir } from "node:os";
+import { join, extname, dirname } from "node:path";
 import { minimatch } from "minimatch";
 import { Decision, Delta, preserve } from "./types.js";
 import { EngineConfig } from "../config/schema.js";
@@ -79,6 +80,11 @@ export async function stage1(delta: Delta, cfg: EngineConfig): Promise<Decision 
     results.push(...chunkResults);
   }
 
+  // Per-file structural verdicts are the evidence behind an ast_identical preserve (or its
+  // absence). Logging them makes "why wasn't this preserved?" answerable from the audit trail
+  // instead of by re-running difftastic by hand.
+  console.log(`[stage1] verdicts ${JSON.stringify(results.map((r) => ({ f: r.file, structural: r.structural })))}`);
+
   for (const { file, structural } of results) {
     if (structural === "unsupported") {
       allStructurallyIdentical = false; // fail closed: can't prove null → don't preserve here
@@ -138,9 +144,20 @@ async function difftasticStructuralChange(
     // processes across every in-flight evaluation, not just this one.
     const release = await acquireDifftSlot();
     try {
-      await run(cfg.difftasticBin, ["--exit-code", "--display", "json", approvedTmp, headTmp], {
+      // Only the EXIT CODE is load-bearing here (0 = no syntactic changes, 1 = structural
+      // change); stdout is never parsed. It must not ask for `--display json`: difftastic
+      // treats JSON output as an unstable feature and exits 2 with
+      // "set the environment variable DFT_UNSTABLE=yes" unless that opt-in is present — and
+      // exit 2 is mapped to "unsupported", which silently disabled the ENTIRE deterministic
+      // preserve path (every file looked unparseable, so ast_identical could never fire).
+      // Verified against difftastic 0.69.0, the version pinned in the Dockerfile and the
+      // Lambda layer. Keeping the default display costs nothing and cannot regress this way.
+      await run(cfg.difftasticBin, ["--exit-code", approvedTmp, headTmp], {
         timeout: 30000,
-        maxBuffer: 10 * 1024 * 1024
+        maxBuffer: 10 * 1024 * 1024,
+        // Belt and braces: if a future change does want JSON, the opt-in is already here, so
+        // the same silent-disable cannot recur.
+        env: { ...process.env, DFT_UNSTABLE: "yes" },
       });
     } finally {
       release();
@@ -149,11 +166,27 @@ async function difftasticStructuralChange(
     return false; // exit 0 → no structural change
   } catch (e: any) {
     if (e && e.code === 1) return true;                 // structural change
+    // Anything that is not "clean run" or "structural change" must be visible. Exit code 2
+    // (difftastic could not parse / errored) and every unexpected failure look identical from
+    // the outside — "unsupported" — which silently disables the deterministic preserve path
+    // while the engine still reports healthy. Log difftastic's own stderr so the difference
+    // between "this language has no grammar" and "the binary is broken" is diagnosable.
+    console.error(`[stage1] ${file}: difftastic did not decide (code=${e?.code ?? "none"}): ${String(e?.stderr || e?.message || e).slice(0, 400)}`);
     if (e && e.code === 2) return "unsupported";        // difft: parse/other → treat as unsupported
+    // Anything else is fail-closed too, but it must never be SILENT: a missing/unexecutable
+    // difftastic binary, a blob fetch failure, or a timeout all land here and all look
+    // identical to "unsupported language" from the outside — which silently turns the entire
+    // deterministic preserve path off while the engine still reports healthy. Log enough to
+    // tell those apart; this line is how an operator discovers Stage 1 is dark.
     return "unsupported";                                // unknown → fail closed
   } finally {
     if (approvedTmp) await unlink(approvedTmp).catch(() => {});
     if (headTmp) await unlink(headTmp).catch(() => {});
+    // Both blobs live in one mkdtemp directory (materializeBlobs); remove it too, or a
+    // long-lived process leaks an empty directory per file per evaluation into /tmp — which on
+    // this deployment is a size-capped emptyDir / Lambda's 512MB ephemeral store.
+    const dir = approvedTmp ? dirname(approvedTmp) : headTmp ? dirname(headTmp) : undefined;
+    if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -193,6 +226,50 @@ function isTrivialClass(file: string, delta: Delta, cfg: EngineConfig): boolean 
  * @param _delta - The change context.
  * @returns An object containing paths to the materialized temp files.
  */
-async function materializeBlobs(_file: string, _delta: Delta): Promise<{ path: string; head: string }> {
-  throw new Error("materializeBlobs must be wired to github/pr.ts blob fetch");
+async function materializeBlobs(file: string, delta: Delta): Promise<{ path: string; head: string }> {
+  const src = delta.blobSource;
+  if (!src) {
+    // No live handle (unit tests, or a caller that failed to wire it): cannot prove anything.
+    // The caller maps this throw to "unsupported", which forbids an ast_identical preserve —
+    // fail closed by construction.
+    throw new Error("materializeBlobs: delta.blobSource is not wired");
+  }
+
+  const dir = await mkdtemp(join(tmpdir(), "afe-"));
+
+  // Fetch each version by its exact commit SHA — never by branch ref, which could move between
+  // the two fetches and make difftastic compare a pair of blobs that never coexisted.
+  const fetchBlob = async (ref: string): Promise<string> => {
+    const res = await src.octokit.repos.getContent({
+      owner: src.owner, repo: src.repo, path: file, ref,
+      mediaType: { format: "raw" },
+    });
+    // With format: "raw" Octokit hands back the file body as a string. Anything else (a
+    // directory listing, a submodule, an over-size file GitHub refuses to inline) is not
+    // something we can prove identical — throw, and fail closed.
+    if (typeof res.data !== "string") {
+      throw new Error(`materializeBlobs: ${file}@${ref} is not raw text content`);
+    }
+    return res.data;
+  };
+
+  // Preserve the real extension: difftastic picks its tree-sitter grammar from the file name,
+  // so a temp file called "abc123" would parse as plain text and report every change as
+  // structural — silently turning provable-null deltas into dismissals.
+  const ext = extname(file);
+  const write = async (name: string, body: string): Promise<string> => {
+    const p = join(dir, `${name}${ext}`);
+    await writeFile(p, body, "utf8");
+    return p;
+  };
+
+  const [approvedBody, headBody] = await Promise.all([
+    fetchBlob(delta.approvedSha),
+    fetchBlob(delta.headSha),
+  ]);
+
+  return {
+    path: await write("approved", approvedBody),
+    head: await write("head", headBody),
+  };
 }

@@ -2,8 +2,8 @@ import { createServer, IncomingMessage, ServerResponse, Server } from "node:http
 import { pathToFileURL } from "node:url";
 import { verifyWebhookSignature } from "./github/auth.js";
 import { handleFreshApproval } from "./github/freshApproval.js";
-import { setCheckPending, CHECK_NAME } from "./github/actuator.js";
-import { getOctokit, withRateLimit } from "./github/client.js";
+import { getOctokit } from "./github/client.js";
+import { publishPendingCheck } from "./engine.js";
 import { WorkQueue } from "./runtime/queue.js";
 import { createMetrics, queueMetricsHooks, sampleQueueGauges, Metrics } from "./observability/metrics.js";
 
@@ -331,43 +331,9 @@ function enqueueWebhookEvent(eventType: string | undefined, payload: any, delive
       const octokit = getOctokit(process.env.GITHUB_TOKEN);
       const dryRun = process.env.DRY_RUN === "true";
 
-      // Liveness guard for the non-push actions (fail-closed in every branch): "reopened" and
-      // "ready_for_review" (and, in the rare shared-SHA case, "opened") fire on a head SHA that
-      // may ALREADY carry a completed `success` check run from one of the two legitimate
-      // producers — a prior PRESERVE verdict or a fresh-approval echo on this exact SHA (e.g.
-      // approve → close → reopen: reviews and per-SHA check runs both survive a close/reopen).
-      // An unconditional checks.create here would mint a NEW run that supersedes that success
-      // with an in_progress one nothing is wired to complete, silently re-blocking a PR whose
-      // approval state never changed — the exact opposite of this branch's UX goal. So for
-      // those actions, read the SHA's existing runs first and skip the pending write if a
-      // completed success is already present. Safety is unaffected in every direction: skipping
-      // a write can never satisfy anything; a spoofed same-named success from a foreign App
-      // would at most suppress this cosmetic pending write (the integration_id pin still
-      // rejects it as a merge gate); and if the read itself fails, the thrown error just fails
-      // this UX-only task and no pending is written. "synchronize" skips the read entirely — a
-      // freshly-pushed head SHA cannot already carry an approval-derived success, and required
-      // checks match per head SHA, so there is nothing to clobber.
-      if (action !== "synchronize" && !dryRun) {
-        const existing = await withRateLimit(() => octokit.checks.listForRef({
-          owner, repo, ref: headSha, check_name: CHECK_NAME, per_page: 100,
-        }));
-        const alreadySucceeded = (existing.data.check_runs ?? []).some(
-          (r) => r.status === "completed" && r.conclusion === "success",
-        );
-        if (alreadySucceeded) {
-          console.log(`[${deliveryId}] key=${key} head ${headSha} already carries a completed success check; leaving it intact (no pending write).`);
-          return;
-        }
-      }
-
-      // Honest summary per action: on a push the engine is (per the deploy-time ladder wiring)
-      // evaluating the delta; on open/reopen/ready-for-review there is nothing to evaluate yet —
-      // the check is waiting for a human approval on this head. Display text only; the check is
-      // a non-passing "in_progress" either way.
-      const summary = action === "synchronize"
-        ? undefined // setCheckPending's default: "…is evaluating this change…"
-        : "Waiting for a human approval on this pull request's current head commit. A fresh approval on the exact head SHA turns this check green.";
-      await setCheckPending({ octokit, owner, repo, headSha, dryRun }, summary);
+      // Delegates to the shared entry point so the server and the Lambda adapter cannot
+      // diverge: the clobber guard and the honest per-action summary both live there.
+      await publishPendingCheck({ octokit, owner, repo, headSha, dryRun, action });
       // Fall through intentionally ends here for now: the delta evaluation itself is the
       // implementation stub below (ladder + actuator wiring at deploy time).
       // Implementation stub for all other pull_request / pull_request_review actions:

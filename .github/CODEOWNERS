@@ -49,6 +49,14 @@
 # Webhook server + event dispatch (what gets routed to the gates at all).
 /src/index.ts                      @YOUR-ORG/security-review
 
+# The host-independent evaluation entry point both deployments call (approval resolution →
+# delta → ladder → actuate). Changing it changes what every host decides.
+/src/engine.ts                     @YOUR-ORG/security-review
+
+# The Lambda deployment shape: webhook receiver, App-identity auth wiring, and the build that
+# decides what code actually runs in production. Same control surface as src/index.ts.
+/deploy/lambda/                    @YOUR-ORG/security-review
+
 # The immutable audit trail (tampering here hides evidence of decisions).
 /src/audit/                        @YOUR-ORG/security-review
 

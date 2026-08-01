@@ -23,6 +23,10 @@ export type ReasonCode =
   | "unresolved_approved_sha"
   | "unsupported_language_fallthrough"
   | "self_governance"
+  // Stage 2 was not consulted because the deployment runs deterministic-only
+  // (cfg.stage2Enabled === false). Everything Stage 1 cannot prove null dismisses to human
+  // re-review — the strictest posture, and the one rollout phase P2 runs under.
+  | "deterministic_only_mode"
   | "stage2_unexpected_error";
 
 export interface Decision {
@@ -45,6 +49,18 @@ export interface Delta {
   forcePushed: boolean;
   baseChanged: boolean;
   patchByFile: Record<string, string>; // unified diff text per file (for difftastic + model)
+  /**
+   * Optional handle Stage 1 uses to materialize the two blob versions difftastic compares.
+   * Deliberately OPTIONAL and deliberately not part of the decision inputs: when it is absent
+   * (every unit test constructs a Delta without it), materializeBlobs throws, stage 1 maps the
+   * throw to "unsupported", and the evaluation fails CLOSED — no preserve. Only the live wiring
+   * in buildDelta() populates it.
+   */
+  blobSource?: {
+    octokit: any;
+    owner: string;
+    repo: string;
+  };
 }
 
 /**

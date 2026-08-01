@@ -4,6 +4,9 @@ export function testConfig(): EngineConfig {
   return {
     difftasticBin: "difft",
     selfGovernedRepos: ["test-org/approval-freshness-engine"],
+    // Existing tests were written against a ladder that always reached Stage 2, so the default
+    // here keeps that behavior; the deterministic-only path has its own dedicated cases.
+    stage2Enabled: true,
     denylist: { paths: ["**/*.tf", "**/prod/**", ".github/workflows/**", "**/package.json"] },
     codeownersGlobs: [],
     trivialClasses: {

@@ -1,0 +1,78 @@
+{
+  "_comment": "Runtime config for the Approval Freshness Engine. Validated by src/config/schema.ts at startup; any violation is a fail-closed startup error. Regex fields are strings; the /g and /y flags are rejected because a stateful lastIndex makes a security gate miss matches on alternate calls.",
+
+  "difftasticBin": "difft",
+
+  "selfGovernedRepos": ["jonehb11/approval-freshness-engine"],
+
+  "_comment_stage2": "false = deterministic-only. Stages 0-1 decide; anything they cannot prove null dismisses to human re-review with reason deterministic_only_mode. No model provider is wired in this deployment.",
+  "stage2Enabled": false,
+
+  "denylist": {
+    "paths": [
+      "**/*.tf",
+      "**/*.tfvars",
+      "**/prod/**",
+      "**/production/**",
+      ".github/workflows/**",
+      ".github/actions/**",
+      "**/CODEOWNERS",
+      "**/Dockerfile",
+      "**/docker-compose*.yml",
+      "**/*.tfstate",
+      "**/iam/**",
+      "**/*policy*.json",
+      "**/package.json",
+      "**/requirements.txt",
+      "**/go.mod",
+      "**/Gemfile",
+      "**/pom.xml",
+      "**/build.gradle",
+      "**/Chart.yaml",
+      "**/values.yaml",
+      "**/*.pem",
+      "**/*.key"
+    ]
+  },
+
+  "codeownersGlobs": [],
+
+  "trivialClasses": {
+    "docs": ["**/*.md", "**/*.mdx", "**/*.txt", "docs/**"],
+    "lockfiles": {
+      "files": ["**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml", "**/go.sum"],
+      "requireBotAuthor": ["dependabot[bot]", "renovate[bot]"]
+    },
+    "generated": {
+      "files": ["**/*.pb.go", "**/*_generated.go", "**/*.gen.ts"],
+      "requireDeterministicRegen": true
+    }
+  },
+
+  "injectionCanaries": [
+    "/impact:\\s*low/i",
+    "/ignore (all )?previous/i",
+    "/classifier:/i",
+    "/mark this (as )?(low|safe|trivial)/i",
+    "/disregard (the )?(above|prior)/i",
+    "/you are an? (ai|assistant|model)/i",
+    "/system prompt/i"
+  ],
+
+  "sensitivePatterns": [
+    "/\\b(password|passwd|secret|token|credential|jwt|hmac|authenticate|authorize)\\b/i",
+    "/\\b(eval|exec|execSync|deserialize|pickle|unserialize)\\b/i",
+    "/\\bfetch\\(|axios|http\\.|requests\\./i",
+    "/\\b(chmod|sudo|setuid)\\b/i"
+  ],
+
+  "thresholds": {
+    "confThreshold": 0.85,
+    "softMaxLines": 40,
+    "softMaxFiles": 5,
+    "hardMaxLines": 400,
+    "hardMaxFiles": 20,
+    "modelTimeoutMs": 8000,
+    "stalePendingMs": 900000
+  }
+}

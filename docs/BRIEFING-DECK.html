@@ -1,0 +1,550 @@
+<title>Approval Freshness Engine — Briefing</title>
+<style>
+  :root{
+    --paper:#F6F7F9; --ink:#131A22; --ink-2:#3D4A57; --ink-3:#6B7885;
+    --rule:#DDE2E8; --panel:#FFFFFF; --panel-2:#EFF2F5;
+    --accent:#1B6F6A; --accent-soft:#D8E8E6;
+    --pass:#2C6E49; --pass-bg:#DFEDE4;
+    --block:#9E3620; --block-bg:#F3E0DB;
+    --warn:#8A6212; --warn-bg:#F2E9D4;
+    --display:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+    --body:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --paper:#0E1319; --ink:#E8ECF1; --ink-2:#B3BDC8; --ink-3:#7D8996;
+      --rule:#252E38; --panel:#151C24; --panel-2:#1B242E;
+      --accent:#5FBFB6; --accent-soft:#12332F;
+      --pass:#7DC79A; --pass-bg:#152B1F;
+      --block:#E08A72; --block-bg:#2E1913;
+      --warn:#D7B15F; --warn-bg:#2B2313;
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#0E1319; --ink:#E8ECF1; --ink-2:#B3BDC8; --ink-3:#7D8996;
+    --rule:#252E38; --panel:#151C24; --panel-2:#1B242E;
+    --accent:#5FBFB6; --accent-soft:#12332F;
+    --pass:#7DC79A; --pass-bg:#152B1F;
+    --block:#E08A72; --block-bg:#2E1913;
+    --warn:#D7B15F; --warn-bg:#2B2313;
+  }
+  :root[data-theme="light"]{
+    --paper:#F6F7F9; --ink:#131A22; --ink-2:#3D4A57; --ink-3:#6B7885;
+    --rule:#DDE2E8; --panel:#FFFFFF; --panel-2:#EFF2F5;
+    --accent:#1B6F6A; --accent-soft:#D8E8E6;
+    --pass:#2C6E49; --pass-bg:#DFEDE4;
+    --block:#9E3620; --block-bg:#F3E0DB;
+    --warn:#8A6212; --warn-bg:#F2E9D4;
+  }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--body);line-height:1.55;
+    -webkit-font-smoothing:antialiased}
+
+  /* ---- rail ---- */
+  .rail{position:fixed;left:0;top:0;bottom:0;width:210px;padding:26px 18px;border-right:1px solid var(--rule);
+    background:var(--panel);display:flex;flex-direction:column;gap:2px;z-index:20;overflow-y:auto}
+  .rail h4{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--ink-3);margin:16px 0 8px;font-weight:600}
+  .rail h4:first-child{margin-top:0}
+  .rail a{display:block;font-size:12.5px;color:var(--ink-2);text-decoration:none;padding:5px 9px;
+    border-radius:4px;border-left:2px solid transparent}
+  .rail a:hover{background:var(--panel-2);color:var(--ink)}
+  .rail a.on{color:var(--accent);border-left-color:var(--accent);background:var(--accent-soft);font-weight:600}
+  .rail a:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+
+  .wrap{margin-left:210px}
+  @media (max-width:900px){.rail{display:none}.wrap{margin-left:0}}
+
+  /* ---- slides ---- */
+  .slide{min-height:100vh;padding:72px 64px;border-bottom:1px solid var(--rule);
+    display:flex;flex-direction:column;justify-content:center;gap:24px;scroll-margin-top:0}
+  @media (max-width:700px){.slide{padding:44px 22px}}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--accent);font-weight:600}
+  h1{font-family:var(--display);font-size:clamp(34px,5.4vw,62px);line-height:1.06;margin:0;
+    text-wrap:balance;font-weight:600;letter-spacing:-.015em}
+  h2{font-family:var(--display);font-size:clamp(27px,3.5vw,42px);line-height:1.14;margin:0;
+    text-wrap:balance;font-weight:600;letter-spacing:-.01em}
+  h3{font-family:var(--body);font-size:15px;margin:0 0 8px;font-weight:650;letter-spacing:-.005em}
+  p{margin:0;max-width:66ch;color:var(--ink-2);font-size:16.5px}
+  p.lead{font-size:19px;color:var(--ink);max-width:60ch}
+  strong{color:var(--ink);font-weight:650}
+
+  .cols{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--rule);border-radius:7px;padding:20px}
+  .card p{font-size:14.5px}
+
+  .stat{font-family:var(--mono);font-size:clamp(30px,4vw,46px);font-weight:600;color:var(--accent);
+    font-variant-numeric:tabular-nums;line-height:1}
+  .stat-l{font-family:var(--mono);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;
+    color:var(--ink-3);margin-top:9px}
+
+  table{border-collapse:collapse;width:100%;font-size:14px}
+  .scroll{overflow-x:auto;border:1px solid var(--rule);border-radius:7px;background:var(--panel)}
+  th{text-align:left;font-family:var(--mono);font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;
+    color:var(--ink-3);padding:11px 14px;border-bottom:1px solid var(--rule);font-weight:600;white-space:nowrap}
+  td{padding:10px 14px;border-bottom:1px solid var(--rule);color:var(--ink-2);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  td.m,th.m{font-family:var(--mono);font-size:12.5px;font-variant-numeric:tabular-nums}
+
+  .pill{display:inline-block;font-family:var(--mono);font-size:11px;font-weight:600;padding:2px 8px;
+    border-radius:3px;letter-spacing:.04em;white-space:nowrap}
+  .p-pass{background:var(--pass-bg);color:var(--pass)}
+  .p-block{background:var(--block-bg);color:var(--block)}
+  .p-warn{background:var(--warn-bg);color:var(--warn)}
+
+  .eq{font-family:var(--mono);font-size:13.5px;line-height:1.85;background:var(--panel);
+    border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:6px;padding:18px 22px;
+    overflow-x:auto;color:var(--ink)}
+  .eq .k{color:var(--accent);font-weight:600}
+
+  ul{margin:0;padding-left:19px;color:var(--ink-2);font-size:15.5px;max-width:64ch}
+  li{margin:7px 0}
+  li::marker{color:var(--accent)}
+
+  .ladder{display:flex;flex-direction:column;gap:10px}
+  .rung{display:grid;grid-template-columns:76px 1fr auto;gap:18px;align-items:start;
+    background:var(--panel);border:1px solid var(--rule);border-radius:7px;padding:16px 18px}
+  .rung .n{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ink-3);padding-top:2px}
+  @media (max-width:620px){.rung{grid-template-columns:1fr}}
+
+  .note{border-left:3px solid var(--warn);background:var(--warn-bg);padding:14px 18px;border-radius:0 6px 6px 0}
+  .note p{color:var(--ink);font-size:15px}
+
+  .script{background:var(--panel);border:1px solid var(--rule);border-radius:7px;padding:22px 26px;max-width:78ch}
+  .script h3{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--accent);margin:22px 0 7px}
+  .script h3:first-child{margin-top:0}
+  .script p{font-size:15.5px;margin:0 0 11px;max-width:none}
+  .script em{color:var(--ink-3);font-style:italic}
+
+  .foot{font-family:var(--mono);font-size:11.5px;color:var(--ink-3);letter-spacing:.03em}
+  @media (prefers-reduced-motion:no-preference){
+    .slide>*{animation:rise .5s cubic-bezier(.2,.7,.3,1) both}
+    @keyframes rise{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
+  }
+</style>
+
+<nav class="rail">
+  <h4>The answer</h4>
+  <a href="#s1">Title</a>
+  <a href="#s2">Recommendation</a>
+  <h4>Because</h4>
+  <a href="#s3">1 · The tax</a>
+  <a href="#s4">2 · Stronger control</a>
+  <a href="#s5">3 · Cannot fail open</a>
+  <h4>How it works</h4>
+  <a href="#s6">The merge equation</a>
+  <a href="#s7">The ladder</a>
+  <a href="#s8">What passes</a>
+  <a href="#s9">When it breaks</a>
+  <h4>Evidence</h4>
+  <a href="#s10">Live results</a>
+  <a href="#s11">Attacks</a>
+  <a href="#s12">What we got wrong</a>
+  <h4>Decision</h4>
+  <a href="#s13">Limits</a>
+  <a href="#s14">Rollout</a>
+  <a href="#s15">The ask</a>
+  <h4>Appendix</h4>
+  <a href="#s16">Speaker script</a>
+</nav>
+
+<div class="wrap">
+
+<section class="slide" id="s1">
+  <div class="eyebrow">Engineering governance · Briefing</div>
+  <h1>Approvals should expire when the&nbsp;code changes — not when the clock ticks.</h1>
+  <p class="lead">A fail-closed replacement for GitHub's "dismiss stale approvals on any push,"
+    deployed and tested against real pull requests.</p>
+  <div class="foot">Approval Freshness Engine · deterministic-only deployment · 2026-08-01</div>
+</section>
+
+<section class="slide" id="s2">
+  <div class="eyebrow">The recommendation</div>
+  <h2>Adopt it — but only after a measurement that gives us permission to walk away.</h2>
+  <p class="lead">GitHub throws away a human approval whenever <em>any</em> commit lands, even a
+    formatter run or a branch update that changed nothing. That costs reviewer attention and buys
+    no safety. This engine replaces the <strong>staleness test</strong> — not the review requirement.</p>
+  <div class="cols">
+    <div class="card"><h3>What it does</h3><p>Keeps an approval alive when the change since approval
+      is <strong>provably nothing</strong>. Demands fresh human review whenever it isn't.</p></div>
+    <div class="card"><h3>What it cannot do</h3><p>Approve, merge, or push. Its entire vocabulary is
+      dismiss a review, set one check, or do nothing.</p></div>
+    <div class="card"><h3>What it costs to be wrong</h3><p>Every failure lands on a
+      <strong>blocked merge</strong> — exactly what GitHub does today. Proven, not asserted.</p></div>
+  </div>
+</section>
+
+<section class="slide" id="s3">
+  <div class="eyebrow">Supporting argument 1 of 3</div>
+  <h2>Today we pay a re-review tax that verifies nothing.</h2>
+  <p class="lead">A reviewer who has already read a change is asked to read it again because a
+    typo was fixed or an unrelated PR merged first. The second look is ceremony: it audits well
+    and verifies little.</p>
+  <div class="cols">
+    <div class="card"><div class="stat">0</div><div class="stat-l">Safety added by re-approving an unchanged diff</div></div>
+    <div class="card"><div class="stat">2</div><div class="stat-l">Humans interrupted per null re-review</div></div>
+    <div class="card"><div class="stat">P0</div><div class="stat-l">Measures your real number before rollout</div></div>
+  </div>
+  <div class="note"><p><strong>We are not asking you to believe a number.</strong> Phase P0 is a
+    read-only scan of your own history that reports what fraction of post-approval pushes are
+    provably null. If that number is small, the honest answer is: don't deploy this.</p></div>
+</section>
+
+<section class="slide" id="s4">
+  <div class="eyebrow">Supporting argument 2 of 3</div>
+  <h2>On the changes that matter, this is stricter than what we run today.</h2>
+  <p class="lead">Native GitHub applies one blunt rule to every push. This applies a categorical
+    rule to dangerous surfaces — and it never gets tired.</p>
+  <div class="scroll"><table>
+    <tr><th>Change</th><th>GitHub today</th><th>With the engine</th></tr>
+    <tr><td>Formatter run on an approved PR</td><td>Approval discarded</td><td class="m"><span class="pill p-pass">PRESERVED</span></td></tr>
+    <tr><td>Branch updated from main, PR untouched</td><td>Approval discarded</td><td class="m"><span class="pill p-pass">PRESERVED</span></td></tr>
+    <tr><td>One line added to a CI workflow</td><td>Re-review, same fatigue</td><td class="m"><span class="pill p-block">ALWAYS BLOCKED</span></td></tr>
+    <tr><td>Terraform, prod config, IAM, secrets</td><td>Re-review, same fatigue</td><td class="m"><span class="pill p-block">ALWAYS BLOCKED</span></td></tr>
+    <tr><td>Someone else pushes to your branch</td><td>Re-review, same fatigue</td><td class="m"><span class="pill p-block">ALWAYS BLOCKED</span></td></tr>
+    <tr><td>Force-push rewriting history</td><td>Re-review, same fatigue</td><td class="m"><span class="pill p-block">ALWAYS BLOCKED</span></td></tr>
+  </table></div>
+  <p>The engine reallocates review attention from ceremony to substance. Privileged surfaces get
+    <strong>more</strong> guaranteed human attention, because the null re-reviews stopped consuming it.</p>
+</section>
+
+<section class="slide" id="s5">
+  <div class="eyebrow">Supporting argument 3 of 3</div>
+  <h2>It cannot fail open, because it is not the gate.</h2>
+  <p class="lead">The merge gate is GitHub's own ruleset, evaluated natively on every merge attempt.
+    The engine's only power is to try to make one boolean true. If the engine dies, that boolean
+    stays false — and false means blocked.</p>
+  <div class="cols">
+    <div class="card"><h3>No dead-man switch</h3><p>Nothing counts down. Nothing reverts. No runtime
+      component can edit a ruleset — that credential does not exist anywhere in the system.</p></div>
+    <div class="card"><h3>No frozen merges</h3><p>A fresh human approval on the current commit always
+      clears the block — the same action GitHub asks for today.</p></div>
+    <div class="card"><h3>Proven, not claimed</h3><p>We killed the engine for five minutes and pushed
+      to an approved PR. It stayed blocked. No timer rescued it.</p></div>
+  </div>
+</section>
+
+<section class="slide" id="s6">
+  <div class="eyebrow">How it works · the whole design in four lines</div>
+  <h2>The merge equation.</h2>
+  <div class="eq">
+merge allowed  <span class="k">⇔</span>  approving reviews <span class="k">≥</span> 1
+               <span class="k">AND</span>  check <span class="k">approval-freshness/evaluated</span> == success
+                   on the <span class="k">CURRENT</span> head commit
+                   from the engine's GitHub App <span class="k">only</span>
+  </div>
+  <p class="lead">Checks are matched per commit, so <strong>every new push starts blocked by
+    construction</strong>. The App identity is pinned in the ruleset: a check with the same name from
+    any other identity is rejected by GitHub as "not set by the expected GitHub App."</p>
+  <p>Only two things can ever turn that check green: the engine proving the change is null, or a
+    real human approving the current commit. There is no third path.</p>
+</section>
+
+<section class="slide" id="s7">
+  <div class="eyebrow">How it works · the decision</div>
+  <h2>Three rungs. The machine judgment is last, optional, and outranked.</h2>
+  <div class="ladder">
+    <div class="rung"><div class="n">Stage 0</div>
+      <div><h3>Hard rules — plain code, no AI</h3><p>Privileged paths, force-push, commits by
+        anyone but the author, size caps, injection canaries. Glob matching and integer
+        comparisons. It can only block.</p></div>
+      <div><span class="pill p-block">BLOCK ONLY</span></div></div>
+    <div class="rung"><div class="n">Stage 1</div>
+      <div><h3>Structural diff — difftastic, no AI</h3><p>Parses both versions into syntax trees and
+        compares the trees. Formatting, indentation and blank lines vanish; real code changes do
+        not. It can only preserve.</p></div>
+      <div><span class="pill p-pass">PRESERVE ONLY</span></div></div>
+    <div class="rung"><div class="n">Stage 2</div>
+      <div><h3>Classifier — advisory, gated, switchable</h3><p>One structured verdict, no agent loop.
+        It cannot preserve alone: the change must also be small, touch nothing sensitive, and add
+        no dependency. <strong>Disabled entirely in the deployment we tested.</strong></p></div>
+      <div><span class="pill p-warn">OPTIONAL</span></div></div>
+  </div>
+</section>
+
+<section class="slide" id="s8">
+  <div class="eyebrow">How it works · for the developer</div>
+  <h2>What keeps your approval, and what doesn't.</h2>
+  <div class="cols">
+    <div class="card"><h3>Approval survives</h3><ul>
+      <li>Formatter runs, re-indentation, line reflow</li>
+      <li>Blank lines, trailing commas</li>
+      <li>Docs and <span class="pill p-pass">*.md</span> only</li>
+      <li>"Update branch" when your files didn't change</li>
+    </ul></div>
+    <div class="card"><h3>Human must look again</h3><ul>
+      <li>Any real code change</li>
+      <li>Workflows, Terraform, prod config, manifests</li>
+      <li>A commit from someone who isn't the author</li>
+      <li>Force-pushes, oversized diffs</li>
+      <li><strong>Comment edits</strong> — comments are syntax, not whitespace</li>
+    </ul></div>
+  </div>
+  <div class="note"><p>That last line is a correction we made <em>because</em> of live testing. We
+    had documented comment typo fixes as preserved. We ran it: difftastic treats comments as
+    syntax-tree nodes, so they are a real change. The claim was wrong, and the docs now say so.</p></div>
+</section>
+
+<section class="slide" id="s9">
+  <div class="eyebrow">How it works · every way it can break</div>
+  <h2>Failure has exactly two destinations, and both are safe.</h2>
+  <div class="scroll"><table>
+    <tr><th>What fails</th><th>What happens to the merge</th><th class="m">Tested</th></tr>
+    <tr><td>Engine crashes or is throttled to zero</td><td>Check never goes green — blocked until a human approves</td><td class="m"><span class="pill p-pass">YES</span></td></tr>
+    <tr><td>Credentials lost mid-flight</td><td>No check written at all — blocked</td><td class="m"><span class="pill p-pass">YES</span></td></tr>
+    <tr><td>Webhook forged or tampered</td><td>Rejected 401, nothing written</td><td class="m"><span class="pill p-pass">YES</span></td></tr>
+    <tr><td>Approval on an older commit</td><td>Never transfers to the new commit — blocked</td><td class="m"><span class="pill p-pass">YES</span></td></tr>
+    <tr><td>Model outage or nonsense verdict</td><td>Dismiss — i.e. today's behaviour</td><td class="m"><span class="pill p-warn">BY DESIGN</span></td></tr>
+    <tr><td>Webhook lost during an outage</td><td>Stays blocked; <strong>not</strong> self-healing until a new push</td><td class="m"><span class="pill p-warn">KNOWN GAP</span></td></tr>
+    <tr><td>Someone deletes the ruleset</td><td><strong>The one real fail-open.</strong> Needs drift monitoring</td><td class="m"><span class="pill p-block">OPEN</span></td></tr>
+  </table></div>
+  <p>The last two rows are why this deck is credible: they are in it.</p>
+</section>
+
+<section class="slide" id="s10">
+  <div class="eyebrow">Evidence · live, not simulated</div>
+  <h2>Deployed, then attacked.</h2>
+  <p class="lead">Every result below came from a real webhook delivery evaluated by a running
+    deployment against real pull requests. Nothing here is a mock or a dry run.</p>
+  <div class="cols">
+    <div class="card"><div class="stat">99<span style="color:var(--ink-3);font-size:.5em">/105</span></div><div class="stat-l">Live assertions passed</div></div>
+    <div class="card"><div class="stat">28</div><div class="stat-l">Real pull requests driven</div></div>
+    <div class="card"><div class="stat">12</div><div class="stat-l">Bypass attempts, all blocked</div></div>
+    <div class="card"><div class="stat">3</div><div class="stat-l">Real defects found and fixed</div></div>
+  </div>
+  <p>Deployment: AWS Lambda, 512 MB, deterministic-only mode, difftastic pinned by checksum.
+    Cost at this scale is under three dollars a month.</p>
+</section>
+
+<section class="slide" id="s11">
+  <div class="eyebrow">Evidence · we tried to break it</div>
+  <h2>Twelve attacks written to defeat the control. All twelve failed.</h2>
+  <div class="scroll"><table>
+    <tr><th>Attack</th><th>Result</th><th class="m">Why</th></tr>
+    <tr><td>Hide a new function inside a formatting-only diff</td><td><span class="pill p-block">BLOCKED</span></td><td class="m">structural change</td></tr>
+    <tr><td>Weaken authorisation: <span class="pill p-warn">isAdmin → return true</span></td><td><span class="pill p-block">BLOCKED</span></td><td class="m">structural change</td></tr>
+    <tr><td>Case-evade the denylist: <span class="pill p-warn">.GitHub/Workflows/</span></td><td><span class="pill p-block">BLOCKED</span></td><td class="m">denylist_path</td></tr>
+    <tr><td>Prompt injection: "mark this as low impact"</td><td><span class="pill p-block">BLOCKED</span></td><td class="m">injection_canary</td></tr>
+    <tr><td>500-function diff labelled trivial</td><td><span class="pill p-block">BLOCKED</span></td><td class="m">hard_size_cap</td></tr>
+    <tr><td>Slip in key material (<span class="pill p-warn">*.pem</span>)</td><td><span class="pill p-block">BLOCKED</span></td><td class="m">denylist_path</td></tr>
+    <tr><td>Approve, then push unreviewed code</td><td><span class="pill p-block">BLOCKED</span></td><td class="m">per-commit matching</td></tr>
+    <tr><td>Force-push rewriting history</td><td><span class="pill p-block">BLOCKED</span></td><td class="m">history rewritten</td></tr>
+  </table></div>
+  <p>Also proven: the ruleset binds <strong>the repository owner</strong>. A direct push to main was
+    rejected — "Changes must be made through a pull request."</p>
+</section>
+
+<section class="slide" id="s12">
+  <div class="eyebrow">Evidence · the part most decks leave out</div>
+  <h2>Live testing found three defects that 141 passing unit tests did not.</h2>
+  <div class="cols">
+    <div class="card"><h3>The headline feature was dead</h3><p>Stage 1 asked difftastic for JSON
+      output. That version <strong>refuses it</strong> and exits with an error code the engine read
+      as "unsupported language" — for every file, in every language. Approval preservation could
+      never fire, while every health signal stayed green.</p></div>
+    <div class="card"><h3>The biggest bucket never worked</h3><p>"Update branch" pushes — usually the
+      most common preserve case — were being read as a large foreign change and dismissed.</p></div>
+    <div class="card"><h3>A guard existed in only one host</h3><p>Reopening an approved PR silently
+      re-blocked it, because the safeguard lived in the server path and the deployed path skipped it.</p></div>
+  </div>
+  <div class="note"><p><strong>Why this matters more than the passes.</strong> All three were
+    invisible to a test suite that mocked the outside world. That is the argument for the shadow
+    phases: run it against real traffic before trusting it. All three are fixed and re-verified live.</p></div>
+</section>
+
+<section class="slide" id="s13">
+  <div class="eyebrow">Decision · what we cannot claim</div>
+  <h2>What is not yet proven.</h2>
+  <ul>
+    <li><strong>The AI layer is unexercised.</strong> We deployed with it switched off. Everything
+      demonstrated here is deterministic.</li>
+    <li><strong>The offline-recovery workflow is untested.</strong> It needs a second copy of the
+      App key in Actions secrets — a real security trade-off we deliberately did not make on your
+      behalf. The engine's own recovery path <em>is</em> proven.</li>
+    <li><strong>Scale is untested.</strong> A handful of concurrent PRs, not production load.</li>
+    <li><strong>Ruleset deletion is a genuine fail-open</strong> and drift monitoring is documented
+      but not built.</li>
+    <li><strong>Lost webhooks are not replayed.</strong> Safe, but a human must push again.</li>
+  </ul>
+  <p class="lead">If we told you this was production-complete, you should not believe the rest of
+    the deck either.</p>
+</section>
+
+<section class="slide" id="s14">
+  <div class="eyebrow">Decision · how we'd roll it out</div>
+  <h2>Measure first, and keep the kill switch in your hand.</h2>
+  <div class="scroll"><table>
+    <tr><th class="m">Phase</th><th>What runs</th><th>Gate to continue</th></tr>
+    <tr><td class="m">P0</td><td>Read-only scan of our own history. Writes nothing.</td><td>Is the trivial-push fraction worth it? <strong>If not, stop here.</strong></td></tr>
+    <tr><td class="m">P1</td><td>Shadow mode. Decisions logged, nothing enforced.</td><td>Do its decisions match what humans actually did?</td></tr>
+    <tr><td class="m">P2</td><td>Live on 3–5 volunteer repos, deterministic only.</td><td>Zero incidents; re-review requests measurably drop.</td></tr>
+    <tr><td class="m">P3</td><td>Enable the classifier, if wanted at all.</td><td>Security sign-off, including the key-custody decision.</td></tr>
+    <tr><td class="m">P4</td><td>Org-wide enrollment.</td><td>—</td></tr>
+  </table></div>
+  <p>Rollback at every phase is one action: remove the repo from the ruleset. Native behaviour
+    returns immediately — <strong>and turn native stale-dismissal back on in the same change</strong>,
+    or the repo is left with neither control.</p>
+</section>
+
+<section class="slide" id="s15">
+  <div class="eyebrow">The ask</div>
+  <h2>Approve P0 — a read-only measurement that can only ever tell us to stop.</h2>
+  <div class="cols">
+    <div class="card"><h3>What we need</h3><p>Permission to run a read-only scan against a few
+      repositories' history. It writes nothing and touches no gate.</p></div>
+    <div class="card"><h3>What you get back</h3><p>Your own number: what share of post-approval pushes
+      are provably null, and what reviewer time that represents.</p></div>
+    <div class="card"><h3>What we decide then</h3><p>Whether this is worth building on — with a
+      threshold agreed <em>before</em> we see the answer.</p></div>
+  </div>
+  <p class="lead">Everything after P0 is a separate decision, made with evidence instead of
+    argument.</p>
+</section>
+
+<section class="slide" id="s16">
+  <div class="eyebrow">Appendix</div>
+  <h2>Speaker script.</h2>
+  <div class="script">
+    <h3>Open · the recommendation first</h3>
+    <p>"I'm going to give you the answer up front, then the reasons, then the evidence — including
+      the parts that didn't work.</p>
+    <p><strong>The recommendation: we should adopt this, but only after a measurement that gives us
+      permission to walk away.</strong> Here's the problem it solves. Today, GitHub throws away a
+      human approval whenever any commit lands on the pull request. Any commit. If you fix a typo,
+      run the formatter, or click 'Update branch' because someone else's work merged first — the
+      approval is gone and somebody has to look again at code that did not change."</p>
+
+    <h3>Argument 1 · the tax</h3>
+    <p>"That second look is ceremony. The reviewer already read this change. Nothing about it is
+      different. They click approve again, and we've spent two people's attention to verify
+      nothing. It audits beautifully and it catches nothing.</p>
+    <p><em>Pause.</em> I'm not going to put a made-up percentage on that. Phase P0 is a read-only
+      scan of our own history that tells us our real number. If it's small, the honest answer is
+      that we shouldn't deploy this — and I'll say so."</p>
+
+    <h3>Argument 2 · it's stricter where it counts</h3>
+    <p>"The second thing to understand is that this is not a loosening. Today we apply one blunt
+      rule to every push. This applies a categorical rule to the dangerous surfaces.</p>
+    <p>Touch a CI workflow, Terraform, production config, IAM, a dependency manifest — a human
+      reviews it, every time, no exceptions, no model involved. Someone else pushes to your branch,
+      or history gets rewritten — same thing. We're moving review attention from ceremony to
+      substance."</p>
+
+    <h3>Argument 3 · it cannot fail open</h3>
+    <p>"Third, and this is the one the security team will care about: the engine is not the gate.
+      GitHub's own ruleset is the gate. The engine's entire power is to try to make one checkbox
+      true. It cannot approve, cannot merge, cannot push, and cannot edit the rule that governs it —
+      that credential doesn't exist anywhere in the system.</p>
+    <p>So if the engine crashes, the checkbox stays false, and false means blocked. We tested this:
+      we killed it for five minutes and pushed to an approved PR. It stayed blocked. Nothing rescued
+      it, because nothing is supposed to."</p>
+
+    <h3>Transition · going technical</h3>
+    <p>"That's the business case. Let me show you the mechanism, because it's four lines and it's
+      worth understanding."</p>
+
+    <h3>The merge equation</h3>
+    <p>"A merge is allowed if and only if: there's at least one approving review, <em>and</em> a
+      check called approval-freshness/evaluated is green <em>on the current commit</em>, <em>and</em>
+      that check was written by our GitHub App specifically.</p>
+    <p>Two things matter here. Checks are matched per commit, so every new push starts blocked
+      automatically — we don't have to do anything to block, we have to do something to unblock.
+      And the App identity is pinned, so another workflow writing a check with the same name is
+      rejected by GitHub itself.</p>
+    <p>Only two things can turn it green: the engine proving the change is nothing, or a human
+      approving the current commit. There is no third path, by design."</p>
+
+    <h3>The ladder</h3>
+    <p>"The decision has three rungs, and the machine judgment is last, optional, and outranked.</p>
+    <p>Stage 0 is plain code — glob matching and integer comparisons. Privileged paths, force-pushes,
+      foreign commits, size caps. It can only block, never preserve.</p>
+    <p>Stage 1 is difftastic, an open-source structural diff. It parses both versions into syntax
+      trees and compares the trees, so formatting disappears and real code changes don't. It can
+      only preserve, never block.</p>
+    <p>Stage 2 is the classifier. It's advisory: it cannot preserve on its own — the change also has
+      to be small, touch nothing sensitive, and add no dependencies. <strong>And in the version we
+      deployed and tested, it's switched off entirely.</strong> Everything I'm about to show you is
+      deterministic."</p>
+
+    <h3>Evidence · what we did</h3>
+    <p>"We didn't just write this — we deployed it and attacked it. Twenty-eight real pull requests,
+      real webhooks, a real gate. Ninety-nine of a hundred and five assertions passed.</p>
+    <p>Twelve of those were deliberate bypass attempts. We tried hiding a new function inside a
+      formatting-only diff. We rewrote an authorization check to always return true. We tried
+      case-evading the denylist with a capital G in dot-GitHub. We put prompt injection in a comment
+      telling the classifier to mark it low-impact. All twelve were blocked.</p>
+    <p>We also confirmed the rule binds the repo owner — I couldn't push to main myself."</p>
+
+    <h3>Evidence · what went wrong <em>(do not skip this)</em></h3>
+    <p>"Now the part I'd want to hear if I were you. Live testing found three real defects that a
+      hundred and forty-one passing unit tests did not.</p>
+    <p>The worst one: the headline feature was completely dead. Stage 1 was asking difftastic for
+      JSON output, and that version of difftastic refuses — it exits with an error code that our
+      code read as 'unsupported language.' For every file. In every language. So approval
+      preservation could never happen at all, while every health check stayed green and every test
+      passed.</p>
+    <p><em>Let that sit for a second.</em> That's the strongest argument I can make for the shadow
+      phases. You cannot find that class of bug by mocking the outside world. All three are fixed
+      and re-verified against real pull requests."</p>
+
+    <h3>Limits</h3>
+    <p>"What I can't claim: the AI layer is unexercised — we turned it off. Scale is untested.
+      Deleting the ruleset is a genuine fail-open and the drift monitoring for it is documented but
+      not built. And if a webhook is lost during an outage, nothing replays it — safe, but a human
+      has to push again.</p>
+    <p>If I told you this was production-complete, you shouldn't believe the rest of the deck."</p>
+
+    <h3>The ask · close</h3>
+    <p>"So the ask is small and reversible: approve P0. It's a read-only scan of our own history.
+      It writes nothing, touches no gate, and its only possible output is a number.</p>
+    <p>We agree the threshold <em>before</em> we see that number. If we're below it, we stop, and
+      we'll have spent a week to avoid building the wrong thing. If we're above it, everything after
+      that is a separate decision made with evidence instead of argument.</p>
+    <p><em>Questions.</em>"</p>
+  </div>
+</section>
+
+</div>
+
+<script>
+  const links = [...document.querySelectorAll('.rail a')];
+  const slides = [...document.querySelectorAll('.slide')];
+  const byId = new Map(links.map(a => [a.getAttribute('href').slice(1), a]));
+
+  const obs = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        links.forEach(a => a.classList.remove('on'));
+        const a = byId.get(e.target.id);
+        if (a) a.classList.add('on');
+      }
+    });
+  }, { threshold: 0.5 });
+  slides.forEach(s => obs.observe(s));
+
+  // Arrow / space paging between slides.
+  function current() {
+    const mid = window.innerHeight / 2;
+    return slides.findIndex(s => {
+      const r = s.getBoundingClientRect();
+      return r.top <= mid && r.bottom > mid;
+    });
+  }
+  addEventListener('keydown', e => {
+    if (e.target.closest('a')) return;
+    const i = current();
+    if (i < 0) return;
+    if (e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === ' ') {
+      e.preventDefault();
+      slides[Math.min(i + 1, slides.length - 1)].scrollIntoView({ behavior: 'smooth' });
+    } else if (e.key === 'ArrowUp' || e.key === 'PageUp') {
+      e.preventDefault();
+      slides[Math.max(i - 1, 0)].scrollIntoView({ behavior: 'smooth' });
+    }
+  });
+</script>
