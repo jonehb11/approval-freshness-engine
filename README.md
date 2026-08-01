@@ -15,6 +15,92 @@ merge, or push. Worst-case malfunction ≡ today's behavior or a blocked merge. 
 2. **Stage 1 — semantic diff (deterministic, difftastic):** AST-identical / trivial-class / merge-base-only → preserve. No AI.
 3. **Stage 2 — AI classifier (advisory):** low-impact + all deterministic corroboration gates pass → preserve; anything else → dismiss.
 
+## What's actually behind each stage (no magic)
+
+- **Stage 0 is plain TypeScript** (`src/stages/stage0_hardrules.ts`): glob matching (minimatch,
+  case-insensitive so `.Github/workflows` can't evade), integer size caps, a boolean force-push
+  flag, a string comparison of GitHub-verified commit-author logins against the PR author, and a
+  small set of regexes scanned over the diff text. No network, no AI, no state. It can only
+  **dismiss** or pass the delta onward — it has no preserve path.
+- **Stage 1 is [difftastic](https://difftastic.wilfred.me.uk/)** (`src/stages/stage1_difftastic.ts`),
+  an open-source structural diff tool: it parses both versions of each changed file into syntax
+  trees (tree-sitter grammars, ~50 languages) and compares the *trees*, so whitespace, formatting,
+  and comment changes produce "zero structural changes" while any change to actual code structure
+  does not. The binary is checksum-pinned into the container image. Stage 1 can only **preserve**
+  (delta provably null / trivial-class) or pass onward — it has no dismiss path. A file in a
+  language difftastic can't parse fails closed: no preserve, continue to Stage 2.
+- **Stage 2 is one structured model call** (`src/stages/stage2_classifier.ts`): a single JSON
+  verdict `{impact, confidence, reasons}` — no tools, no agent loop, versioned prompt — and it is
+  *advisory*: preserve requires the model saying `low` **and** confidence ≥ threshold **and** every
+  deterministic corroboration gate passing (soft line/file caps, no sensitive patterns, no
+  new-dependency heuristic). Any model error, timeout, or gate failure → dismiss.
+
+## What passes and what doesn't — developer scenarios
+
+All scenarios assume an approved PR that the same developer then pushes to. "Preserved" = your
+approval survives, check goes green, no re-review. "Dismissed" = exactly what native GitHub does
+today: stale approval dismissed, re-review requested, merge blocked until a human re-approves.
+
+**Preserved deterministically — no AI involved (provided no Stage 0 rule below trips):**
+
+| You push… | Path through the engine |
+|---|---|
+| Ran `prettier`/`gofmt`/`black`; formatting-only diff | Stage 1 `ast_identical` → preserve |
+| Fixed a typo **in a code comment** | Stage 1 `ast_identical` → preserve |
+| Reworded a docstring, edited `docs/**` or `*.md` only | Stage 1 `ast_identical` or `trivial_class` (docs) → preserve |
+| Clicked **Update branch** — no conflicts, your PR's own files untouched | Stage 1 `merge_base_only` → preserve¹ |
+| Re-generated a deterministic artifact on an allowlisted `generated` glob | Stage 1 `trivial_class` → preserve |
+| Bot-authored PR (e.g. Renovate as PR author) updates only its own allowlisted lockfile | Stage 1 `trivial_class` (lockfiles) → preserve |
+
+**Dismissed categorically at Stage 0 — the AI never even sees these:**
+
+| You push… | Why it dismisses |
+|---|---|
+| *Any* edit — even one character — to a privileged path: `*.tf`, `**/prod/**`, `.github/workflows/**`, IAM/policy files, dependency manifests, CODEOWNERS-governed paths | `denylist_path` / `codeowners_path` |
+| A force-push or rebase — even if the content ends up identical | `force_push` (history since approval can't be verified) |
+| A branch where **someone other than the PR author** pushed a commit (or a commit GitHub can't attribute to a verified account) | `foreign_author_commit` |
+| A "trivial" change that is thousands of lines / dozens of files | `hard_size_cap` |
+| A diff whose text contains classifier-manipulation strings (prompt-injection canaries) | `injection_canary` |
+| Any change to the engine's own control surface (workflows, ruleset, stages, prompt, echo…) in a self-governed repo | `self_governance` — the engine never grades its own gates |
+
+**The discretionary middle — real code change on non-privileged paths (Stage 2, never "for sure"):**
+
+| You push… | Likely outcome |
+|---|---|
+| Changed a log message or user-facing string | Preserve *if* model says low + confidence ≥ threshold + all gates pass; otherwise dismiss |
+| Small rename / tiny refactor, no behavior intent | Same — gated preserve possible, never guaranteed |
+| Added an `import` or a dependency line anywhere in the diff | Dismiss — `noNewDependencies` gate overrides even a "low" verdict |
+| Anything the model calls high-impact, or answers with low confidence, or errors/times out on | Dismiss (`model_high_impact` / `model_low_confidence` / `model_error`) |
+
+Rule of thumb for developers: **prove-ably-nothing changes keep your approval; anything that
+touches meaning needs either every gate to agree or a human re-approval — and privileged paths
+always need the human.**
+
+**Walkthrough — a push that keeps its approval.** Priya's approved PR gets one more commit: she
+ran the formatter (48 lines across 3 files, all her own commits). Webhook arrives → check flips to
+`in_progress` on the new head (merge blocked, by construction). Stage 0: no privileged paths, no
+force-push, author matches, under caps, no canaries → continue. Stage 1: difftastic parses all
+3 files — zero structural changes → **preserve** (`ast_identical`). The engine writes check
+`success` on her head SHA; her original approval was never touched; the merge box is green in
+seconds. No AI was consulted.
+
+**Walkthrough — a push that gets dismissed.** Marcus's approved PR gets a commit adding retry
+logic to the payment client plus a new npm package. Stage 0: paths aren't privileged, size is
+fine → continue. Stage 1: difftastic sees real structural changes → continue. Stage 2: the model
+says `low` — but the `noNewDependencies` gate spots the added dependency line and fails →
+**dismiss** (`corroboration_gate_failed`): stale approval dismissed, check `failure`, re-review
+requested with a comment summarizing the delta. His reviewer looks at the current head and
+re-approves → the fresh-approval echo flips the check to `success`. Total cost vs today: zero —
+this is exactly the re-review native GitHub would have demanded.
+
+**Walkthrough — a push the AI never sees.** Dana's approved PR adds one line to
+`.github/workflows/ci.yaml`. Stage 0 dismisses instantly (`denylist_path`): privileged surfaces
+categorically require fresh human review, regardless of size or what any model thinks.
+
+¹ Build honesty: the `merge_base_only` bucket has a known implementation caveat in the current
+scaffold (the three-dot compare in `src/github/pr.ts` — see FAILURE-MODES.md §4.5) that must be
+fixed and verified during P0 before quoting preserve rates for "Update branch" traffic.
+
 ## End-to-End Flow & Fail-Safe Mechanics
 
 To make this engine work, **GitHub's native "Dismiss stale pull request approvals" setting must be turned OFF** in enrolled repositories. The engine takes over that responsibility — but the *merge gate itself* is never the engine. It is GitHub's own ruleset enforcement, evaluated natively, on every merge attempt, with no runtime credential able to weaken it. The engine's job is only ever to try to make one boolean true.
