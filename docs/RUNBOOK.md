@@ -21,8 +21,16 @@ There is no automated ruleset mutation to trigger. The kill switch is a **human 
 un-enroll the repo by removing it from the ruleset's target list (or disabling the ruleset for it)
 via the same Git-reviewed process used to enroll it — a `PUT` to the update-ruleset endpoint
 (GitHub's ruleset API is `PUT`, not `PATCH`), reviewed and merged like any other infra change.
-This instantly restores fully native branch protection for that repo. No deploy, no workflow to
+This instantly removes the engine's required check from that repo. No deploy, no workflow to
 run, no automated equivalent — because there is no automated direction to protect against.
+
+**Pair un-enrollment with restoring native staleness protection — do both in the same change.**
+Enrollment required turning native "Dismiss stale pull request approvals" (and "Require approval
+of the most recent reviewable push") **off** on the repo (README step 4.3). Un-enrolling removes
+this ruleset's gate but does not turn those back on. An un-enrollment that skips this step leaves
+the repo with **neither** staleness control — strictly weaker than before enrollment (see
+FAILURE-MODES.md §4.1). "Rolled back to normal" means: repo out of this ruleset **and** native
+stale-dismissal re-enabled wherever it previously lived.
 
 ## Engine down — what actually happens (nothing to do for safety, any duration)
 - Freshly-pushed enrolled PRs wait on the required check exactly as they would for any other
@@ -68,7 +76,10 @@ Target: zero false-preserve findings.
 There is no automated re-enroll path — only the reverse of the manual kill switch, deliberately:
 1. Confirm the engine is healthy (dashboard `afe_current_mode` = Tier 1, no open incidents).
 2. Add the repo back to the ruleset's target list via the same Git-reviewed `PUT` process (§7.1,
-   IMPLEMENTATION-PLAN.md) used for original enrollment.
+   IMPLEMENTATION-PLAN.md) used for original enrollment — and turn native "Dismiss stale pull
+   request approvals" back **off** on that repo in the same change (it must have been re-enabled
+   at un-enrollment, per the kill-switch procedure above; leaving it on makes preservation
+   impossible).
 3. Watch the next push to that repo get a check within the normal decision-latency SLO.
 Never automate this direction — it's the same reasoning as never auto-reverting: a human should
 be the one re-tightening branch protection.

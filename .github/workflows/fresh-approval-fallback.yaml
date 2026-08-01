@@ -41,10 +41,20 @@
 #   - Mitigation 3: the App has NO approve / merge / push / administration
 #     permission on the repo. Worst case of key theft is: set checks (only
 #     `success`, per this file) and dismiss reviews (a separate code path this
-#     workflow doesn't use). That can only ever BLOCK a merge or unblock it
-#     BEHIND a still-required, still-platform-verified human approval. It can
-#     never remove the ruleset's "≥1 approving review" requirement, and it
-#     cannot touch the ruleset itself (no ruleset-write scope, anywhere).
+#     workflow doesn't use). It can never remove the ruleset's "≥1 approving
+#     review" requirement, and it cannot touch the ruleset itself (no
+#     ruleset-write scope, anywhere). State the bound honestly, though: the
+#     required approval need not cover the CURRENT head — the enrolled ruleset
+#     deliberately runs with dismiss_stale_reviews_on_push and
+#     require_last_push_approval both false, because the engine owns staleness.
+#     So a key holder who ALSO has ordinary push access to a PR branch could
+#     push an unreviewed commit onto an already-approved PR and self-write
+#     `success` on it — merging a delta no human reviewed. That defeats the
+#     freshness control itself (never GitHub's review requirement), it is
+#     identical in power to the engine-runtime copy of the key, and it is the
+#     real stake of the custody decision (docs/SECURITY-FOLLOWUPS.md Item 1,
+#     docs/FAILURE-MODES.md §4.2): enabling this workflow doubles WHERE that
+#     power can be stolen from; it does not create the power.
 #   - Alternative: an org may choose to OMIT this workflow entirely and accept
 #     "engine down ⇒ merges wait for the engine, or an org owner uses ruleset
 #     break-glass" — that is still fail-closed, just lower-liveness. Enabling

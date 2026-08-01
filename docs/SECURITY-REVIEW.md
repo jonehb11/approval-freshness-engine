@@ -22,10 +22,41 @@ There is no third way to turn this check green.
 ## The one thing to internalize
 **The engine's entire action space is {dismiss a human approval, set the check success/failure,
 do nothing}. It cannot approve, merge, or push.** Its worst possible malfunction equals today's
-behavior or a blocked merge — never code reaching main without human review, and check `success`
-is gated on either the engine's own deterministic+corroborated evaluation or a platform-verified
-human approval event, never on the engine's say-so alone. This is proven by an executable test
-that fails the build if any approve path exists in the code.
+behavior or a blocked merge — never code reaching `main` without an approving human review on the
+PR. What the engine decides is narrower: whether a *post-approval delta* requires a **fresh** human
+look (see "What is guaranteed — and what is not", below). Check `success` is gated on either the
+engine's own deterministic+corroborated evaluation or a platform-verified human approval event,
+never on the engine's say-so alone. This is proven by an executable test that fails the build if
+any approve path exists in the code.
+
+## What is guaranteed — and what is not
+Two tiers. The difference between them *is* the policy decision being asked for, so it is stated
+plainly rather than blurred.
+
+**Guaranteed — by construction (GitHub-enforced or test-enforced):**
+- Every merged PR carries **≥1 platform-verified human approval** of that PR. No machine approval
+  exists anywhere in the system.
+- The engine **cannot approve, merge, or push**; its action space is {dismiss, set-check
+  success|failure, no-op}.
+- **Privileged paths and the engine's own control surface always require fresh human review** —
+  Stage 0 dismisses them categorically, deterministically, before any AI sees the delta.
+- **Every decision emits a structured audit event before any GitHub write** — action, stage,
+  reason code, evidence (the model verdict, every corroboration-gate result, and the stamped
+  prompt version when Stage 2 ran), actors, timestamps — destined for the immutable 6-year audit
+  tenant. The weekly security sampling of PRESERVE decisions is a standing ritual that begins at
+  rollout P3; full raw prompt/response capture is part of the deploy-time model wiring, not yet
+  in the shipped event.
+
+**Not guaranteed — a deliberate policy choice, not a gap:**
+- A delta that **Stage 1 proves semantically null**, or that **Stage 2 assesses low-impact with
+  every deterministic corroboration gate agreeing**, merges **under the original approval — without
+  a fresh human look at that delta.** That is precisely the intent: this control replaces the
+  *staleness test*, not the review requirement.
+- An org that wants strictly deterministic behavior runs **deterministic-only mode** — Stages 0–1
+  live, Stage 2 held in shadow (rollout stage P2) — where nothing but a *provably null* delta is
+  ever preserved. Build honesty: today that is a rollout posture, not yet a config switch (`MODE`
+  is plumbed but unread; a `stage2Enabled` field does not yet exist on `EngineConfig` — see
+  ROLLOUT-PLAN.md §5.1).
 
 ## Invariants (chartered — changing any requires a new security review)
 1. No machine approvals, ever. First and only approval authority is a human.

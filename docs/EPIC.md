@@ -10,7 +10,7 @@
 
 Today, any commit pushed to an approved PR voids the human approval — including semantically null pushes (typo in a comment, formatting, a merge-base change caused by an *unrelated* PR landing first). The result is a re-review tax paid in reviewer fatigue and rubber-stamp second looks that audit well and verify nothing.
 
-This epic replaces the *staleness test*, not the review requirement. A fail-closed engine evaluates every post-approval push through a three-stage ladder: **deterministic hard gates** (privileged paths → always dismiss), **deterministic semantic diffing** (provably-null deltas → preserve the human's approval), and only then an **AI impact classifier whose verdict is advisory** and honored solely when independent deterministic gates corroborate it. The engine's entire action space is {dismiss, do nothing}. It cannot approve. Every merged PR still carries a human approval; privileged surfaces get *more* guaranteed human attention than today, not less.
+This epic replaces the *staleness test*, not the review requirement. A fail-closed engine evaluates every post-approval push through a three-stage ladder: **deterministic hard gates** (privileged paths → always dismiss), **deterministic semantic diffing** (provably-null deltas → preserve the human's approval), and only then an **AI impact classifier whose verdict is advisory** and honored solely when independent deterministic gates corroborate it. The engine's entire action space is {dismiss a stale approval, set the required check success|failure, do nothing}. It cannot approve, merge, or push — the only merge-enabling output is a check `success`, produced solely on a deterministic proof, a fully corroborated low-impact verdict, or the echo of a platform-verified fresh human approval. Every merged PR still carries a human approval; privileged surfaces get *more* guaranteed human attention than today, not less.
 
 This is not a novel bet. It is the assembly of controls already standard at the largest and most security-sensitive engineering organizations (§1), applied to GitHub, which uniquely lacks the primitive.
 
@@ -50,12 +50,12 @@ Dismissal is diff-state-based: GitHub "records the state of the diff at the poin
 ## 2. Security invariants (non-negotiable, chartered)
 
 1. **No machine approvals, ever.** No bot, App, workflow, or model submits an approving review. (v1's "agent re-approves" design is withdrawn.)
-2. **Conservative action space.** Engine outputs ∈ {dismiss human approval, take no action}. There is no output that grants access. Worst-case malfunction ≡ today's behavior (a stale approval dismissed → human re-review), never code merged without review.
+2. **Conservative action space.** Engine outputs ∈ {dismiss human approval, set required-check success|failure, take no action}. No output creates or restores an approval; the one merge-enabling output — check `success` — is producible only by a deterministic proof, a fully corroborated low-impact verdict, or the echo of a platform-verified fresh human approval, never by model say-so alone. Worst-case malfunction ≡ today's behavior (a stale approval dismissed → human re-review), never code merged without an approving human review on the PR.
 3. **Fail closed to a blocked merge that a fresh human approval always lifts.** Any failure — engine error, timeout, model outage, full crash — leaves the required check un-green on the current head SHA, which GitHub's own static ruleset natively blocks; no automation ever mutates the ruleset to compensate. A per-PR reaper resolves lost jobs to dismiss; a circuit breaker keeps deterministic preservation alive during model outages; and a redundant, GitHub-infra-hosted fresh-approval echo (§4.4/§7.2, IMPLEMENTATION-PLAN.md) lets any platform-verified re-review on the current head clear the block even if the engine is fully down. No failure path freezes merges forever, and none fails open — the exposure is bounded by ordinary re-review latency, not by engine health.
 4. **Deterministic gates outrank the model.** The privileged-path denylist (`*.tf`, `**/prod/**`, `.github/workflows/**`, CODEOWNERS-protected paths, IAM/policy files, dependency manifests, CI config) is evaluated in plain code before any model call; a denied path can never be preserved regardless of model output.
 5. **Model output is data, not action.** Stage 2 returns a structured verdict consumed by the rules engine; the model holds no credentials, no tools, no write access.
 6. **Immutable, complete audit trail.** Every synchronize event logs delta, stage verdicts, model prompt+response when invoked, final decision, actors, timestamps → Loki `audit` tenant (6-year class).
-7. **Kill switch, not auto-revert.** A human, Git-reviewed ruleset change (un-enrollment) restores native blanket dismissal for a repo in minutes. There is no automated equivalent — the ruleset is static and no runtime credential can alter it, so engine downtime is never a reason to touch enforcement. The engine is additive and removable.
+7. **Kill switch, not auto-revert.** A human, Git-reviewed ruleset change (un-enrollment) removes the engine's gate for a repo in minutes; restoring the pre-enrollment posture additionally means re-enabling the native blanket-dismissal toggle that enrollment switched off (same change — see RUNBOOK "Manual kill switch"). There is no automated equivalent — the ruleset is static and no runtime credential can alter it, so engine downtime is never a reason to touch enforcement. The engine is additive and removable.
 8. **First approval is always human, on the PR being merged.** The engine only ever concludes "the thing the human approved is, in substance, still the thing being merged."
 
 ---
@@ -75,7 +75,7 @@ Claiming automation "beats human review" in general would be dishonest. The clai
 | **Adversarial pressure** | Social engineering works on tired humans ("it's just a typo fix, can you re-approve?") | Gates don't take Slack messages; the "just a typo" claim is verified, not trusted |
 | **Auditability of the control itself** | Unmeasurable | Preserve/dismiss rates, false-preserve audit findings, and every threshold are dashboards |
 
-Where humans remain irreplaceable — judgment about *intent, design, and fitness* — is exactly where the engine routes work: the first review (untouched) and every substantive or privileged delta (guaranteed). The engine doesn't reduce human review; it **reallocates it from ceremony to substance.** That's the sentence for the security meeting.
+Where humans remain irreplaceable — judgment about *intent, design, and fitness* — is exactly where the engine routes work: the first review (untouched), every privileged or control-surface delta (deterministically guaranteed), and every delta the ladder cannot prove null or corroborate as low-impact. The converse is equally explicit: a proven-null or corroborated low-impact delta merges under the *original* approval, with no fresh human look at that delta — that is the policy choice, stated in SECURITY-REVIEW.md § "What is guaranteed — and what is not". The engine doesn't reduce human review; it **reallocates it from ceremony to substance.** That's the sentence for the security meeting.
 
 ---
 
@@ -125,7 +125,7 @@ Push to an approved PR ──► emit `approval-freshness/evaluated` = pending (
         │
         ▼
   Set `approval-freshness/evaluated` = success (preserve) or leave red (dismiss)
-  Log EVERYTHING → Loki audit tenant.  Never approve. Only {dismiss | nothing}.
+  Log EVERYTHING → Loki audit tenant.  Never approve. Action space: {dismiss | set-check | nothing}.
 ```
 
 **AI placement, stated precisely for security:** Stage 2 only; advisory only; on deltas that already cleared the Stage-0 denylist; and its "preserve" recommendation is honored only when independent deterministic gates corroborate it. This is exactly and only "AI preventing a dismissal," never "AI approving." Every merged PR still carries a human approval of that PR.

@@ -36,6 +36,8 @@ Status checks are matched strictly per head SHA — a success on a previous comm
 
 **The fail-safe story, in one sentence: the ruleset IS the fail-safe.** There is no separate dead-man switch, no auto-revert, no second "native" ruleset state to swap into, and no org-ruleset-write credential anywhere in the system. If the engine crashes, nothing insecure happens — a freshly-pushed PR simply stays in the same natively-blocked state a missing CI check would leave it in. A developer unblocks it exactly the way native GitHub already asks them to: get it re-reviewed. The only "recovery" is a human doing that, on the current head SHA, and the fallback workflow turning that into a green check without the engine needing to be alive. Every failure of every component — model outage, pod crash, webhook loss — resolves to "no success on head SHA," which GitHub already, natively, blocks. Nothing in this design can fail open, and nothing can freeze a merge forever, because a fresh approval is always a way out.
 
+**What that does and does not guarantee.** Guaranteed: every merged PR carries at least one platform-verified human approval; the engine can never approve, merge, or push; privileged paths and the engine's own control surface always require a *fresh* human review; every decision is logged with its evidence. Not guaranteed — and this is the deliberate policy choice, not a gap: a delta that Stage 1 proves semantically null, or that Stage 2 assesses low-impact with every deterministic corroboration gate agreeing, merges **under the original approval, without a fresh human look at that delta.** This engine replaces the *staleness test*, not the review requirement. Orgs that want strictly deterministic behavior run deterministic-only mode (Stages 0–1 live, Stage 2 held in shadow) — today a rollout posture, not yet a config switch (see [Build honesty](#build-honesty)). Stated precisely in [SECURITY-REVIEW.md](docs/SECURITY-REVIEW.md), § "What is guaranteed — and what is not".
+
 ## Layout
 - `src/stages/` — the ladder (0/1/2) + orchestrator
 - `src/github/` — App auth, PR/delta resolution, the actuator (check success/failure + dismiss; no approve path), and the fresh-approval echo (`freshApproval.ts`)
@@ -56,6 +58,10 @@ The `docs/` directory contains all the necessary documents to understand how the
 - [IMPLEMENTATION-PLAN.md](docs/IMPLEMENTATION-PLAN.md) — The full build and implementation details.
 - [RUNBOOK.md](docs/RUNBOOK.md) — The operational runbook for on-call and maintenance.
 - [SECURITY-FOLLOWUPS.md](docs/SECURITY-FOLLOWUPS.md) — Disposition of the three security-review follow-up items (custody decision + two fixes), with evidence.
+- [ENGINEER-FAQ.md](docs/ENGINEER-FAQ.md) — The five hard questions from engineering review answered against the code, the honest ROI discussion, and a dozen-plus anticipated Q&As.
+- [FAILURE-MODES.md](docs/FAILURE-MODES.md) — Exhaustive failure matrix (component × failure → merge-gate state → recovery), the engine-down fallback sequence diagram, and open findings.
+- [ROLLOUT-PLAN.md](docs/ROLLOUT-PLAN.md) — The P0→P4 migration plan: measure-first kill gate, shadow mode, deterministic-only pilot, Stage-2 sign-off, org-wide enrollment.
+- [HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md) — Plain-English explainer for non-technical readers, with a simple flow diagram.
 
 ## Start here
 1. Read the [SECURITY-REVIEW.md](docs/SECURITY-REVIEW.md) and [IMPLEMENTATION-PLAN.md](docs/IMPLEMENTATION-PLAN.md) to understand the architecture.

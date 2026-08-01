@@ -2,7 +2,7 @@
 
 **Companion to:** `approval-freshness-engine-epic.md` (the why + security case). This document is the **how**: architecture, code, config, tests, evals, deployment, rollout, runbooks, and acceptance criteria. An engineer should be able to execute this end to end.
 
-**Invariant restated (governs every line below):** the engine's only actions are `dismiss` or `no-op`. It never approves, never merges, never pushes. Fail-closed everywhere.
+**Invariant restated (governs every line below):** the engine's only actions are `dismiss review`, `set-check success|failure`, and `no-op`. It never approves, never merges, never pushes; the one merge-enabling action (check `success`) requires a deterministic proof, a fully corroborated low-impact verdict, or a platform-verified fresh human approval. Fail-closed everywhere.
 
 ---
 
@@ -52,7 +52,7 @@ GitHub (enrolled repos)
 **Explicitly NOT requested:** Administration, Actions write, Workflows, Secrets, Members, org-admin. The App cannot merge, cannot push, cannot alter rulesets, cannot approve.
 
 ### 2.2 Webhook events
-`pull_request` (actions: `synchronize`, `ready_for_review`, `reopened`), `pull_request_review` (action: `submitted` — routes to the fresh-approval echo, §4.4), `push` (defense-in-depth for edge cases). Webhook secret verified on every request (§4.1).
+`pull_request` (actions: `synchronize`, `opened`, `ready_for_review`, `reopened`), `pull_request_review` (action: `submitted` — routes to the fresh-approval echo, §4.4), `push` (defense-in-depth for edge cases). Webhook secret verified on every request (§4.1).
 
 ### 2.3 Installation
 Org-level install, **repository-scoped to enrolled repos only** (never "all repos"). Enrollment = add repo to the App installation + apply the enrollment ruleset (§7).
@@ -287,7 +287,7 @@ There is exactly **one** state an enrolled repo's default-branch ruleset can be 
 
 **Unenrolled repos:** never touched — permanently on native GitHub behavior. Rollout is repo-by-repo.
 
-**Manual kill switch:** un-enrollment. An org owner removes a repo from the ruleset's target list (or disables the ruleset for that repo) via the same `PUT`-based, Git-reviewed GitOps process used to enroll it — no automation, no `workflow_dispatch`, no environment-protection approval flow, because there is no automated direction to protect against. This instantly and fully restores native branch protection for that repo. It is the *only* kill switch; there is no automatic equivalent, because there is nothing for automation to revert.
+**Manual kill switch:** un-enrollment. An org owner removes a repo from the ruleset's target list (or disables the ruleset for that repo) via the same `PUT`-based, Git-reviewed GitOps process used to enroll it — no automation, no `workflow_dispatch`, no environment-protection approval flow, because there is no automated direction to protect against. This instantly removes the engine's required check for that repo; pair it in the same change with re-enabling the native "dismiss stale approvals" setting that enrollment switched off (§7.1 item 2), or the repo is left with neither staleness control. It is the *only* kill switch; there is no automatic equivalent, because there is nothing for automation to revert.
 
 ### 7.2 Recovery when the engine is down (no auto-revert — see §4.3)
 
@@ -396,7 +396,7 @@ Reuses the platform LGTM stack.
 - **False dismiss (engine too strict):** human just re-approves — same as today. Log a tuning ticket.
 - **Suspected false preserve:** audit sampling or a report → pull the audit event (delta + verdict + gates) → if real, dismiss the class in the denylist immediately + add to adversarial corpus + post-mortem.
 - **Prompt/threshold change:** PR → eval + adversarial suite must pass in CI → shadow one cycle if material → ship. Prompt version auto-stamped in audit.
-- **Manual kill switch (any doubt):** a human un-enrolls the repo via the Git-reviewed ruleset `PUT` (§7.1) — instant return to fully native branch protection, org-wide or per-repo, no deploy, no automated equivalent.
+- **Manual kill switch (any doubt):** a human un-enrolls the repo via the Git-reviewed ruleset `PUT` (§7.1) — the engine's gate is gone instantly, org-wide or per-repo, no deploy, no automated equivalent. Re-enable native stale-dismissal in the same change to fully return to the pre-enrollment posture.
 
 ---
 

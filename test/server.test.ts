@@ -10,7 +10,13 @@ const WEBHOOK_SECRET = "test-webhook-secret";
 // imports withRateLimit from, so both call chains (fresh-approval echo and setCheckPending)
 // resolve instantly against the fake.
 const fakeOctokit = {
-  checks: { create: vi.fn().mockResolvedValue({}) },
+  checks: {
+    create: vi.fn().mockResolvedValue({}),
+    // Read used only by the PR-lifecycle clobber guard (opened/reopened/ready_for_review):
+    // default is "no existing runs", so the pending write proceeds. Individual tests override
+    // with mockResolvedValueOnce to simulate a pre-existing completed success.
+    listForRef: vi.fn().mockResolvedValue({ data: { check_runs: [] } }),
+  },
   pulls: { dismissReview: vi.fn().mockResolvedValue({}), requestReviewers: vi.fn().mockResolvedValue({}) },
   issues: { createComment: vi.fn().mockResolvedValue({}) },
 } as any;
@@ -238,6 +244,183 @@ describe("POST /webhook", () => {
 
     await new Promise((r) => setTimeout(r, 20)); // let the (faked) task settle
     expect(fakeOctokit.checks.create).toHaveBeenCalled();
+  });
+
+  // PR-lifecycle actions that publish an in_progress check on the PR's head SHA. "opened",
+  // "reopened" and "ready_for_review" were added so a brand-new PR shows the engine is present
+  // and waiting, instead of no check at all. The security-relevant assertion in each case is the
+  // one on the check payload: status "in_progress" and NO `conclusion` field — an in_progress
+  // check is non-completed and therefore satisfies nothing, so this path can never be a producer
+  // of check success (see PENDING_CHECK_PR_ACTIONS in src/index.ts).
+  for (const action of ["opened", "reopened", "ready_for_review"] as const) {
+    it(`valid pull_request '${action}' -> 202, enqueues under owner/repo#pr, and sets an in_progress (never passing) check`, async () => {
+      const handle = await startEngine();
+      openEngines.push(handle);
+      const payload = {
+        action,
+        pull_request: { number: 11, head: { sha: "0badc0de" } },
+        repository: { owner: { login: "acme" }, name: "widgets" },
+      };
+      const body = JSON.stringify(payload);
+      const activity = (s: ReturnType<typeof handle.engine.queue.stats>) =>
+        s.running + s.waiting + s.completedTotal + s.failedTotal;
+      const before = activity(handle.engine.queue.stats());
+
+      const res = await fetch(`${handle.baseUrl}/webhook`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Hub-Signature-256": sign(body),
+          "X-GitHub-Event": "pull_request",
+          "X-GitHub-Delivery": `test-delivery-${action}`,
+        },
+        body,
+      });
+
+      expect(res.status).toBe(202);
+      expect(activity(handle.engine.queue.stats())).toBeGreaterThan(before);
+
+      await new Promise((r) => setTimeout(r, 20)); // let the (faked) task settle
+      expect(fakeOctokit.checks.create).toHaveBeenCalledTimes(1);
+      const args = fakeOctokit.checks.create.mock.calls[0][0];
+      expect(args).toMatchObject({
+        owner: "acme",
+        repo: "widgets",
+        name: "approval-freshness/evaluated",
+        head_sha: "0badc0de",
+        status: "in_progress",
+      });
+      // Non-passing by construction: no conclusion at all, and certainly not a satisfying one.
+      expect(args.conclusion).toBeUndefined();
+      // Honest UX: on these lifecycle actions nothing is being evaluated yet — the summary must
+      // say "waiting for an approval", never the synchronize path's "evaluating" text.
+      expect(String(args.output?.summary)).toMatch(/waiting for a human approval/i);
+      expect(String(args.output?.summary)).not.toMatch(/evaluating/i);
+    });
+  }
+
+  it("pull_request 'reopened' on a head SHA that already carries a completed success does NOT clobber it with a pending run", async () => {
+    const handle = await startEngine();
+    openEngines.push(handle);
+    // Simulate the approve → close → reopen sequence: the fresh-approval echo (or a PRESERVE
+    // verdict) already wrote a completed success for this exact SHA, and both reviews and
+    // per-SHA check runs survive a close/reopen. Writing in_progress now would supersede that
+    // success and re-block a PR whose approval state never changed.
+    fakeOctokit.checks.listForRef.mockResolvedValueOnce({
+      data: { check_runs: [{ status: "completed", conclusion: "success" }] },
+    });
+    const payload = {
+      action: "reopened",
+      pull_request: { number: 14, head: { sha: "a11ce555" } },
+      repository: { owner: { login: "acme" }, name: "widgets" },
+    };
+    const body = JSON.stringify(payload);
+
+    const res = await fetch(`${handle.baseUrl}/webhook`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Hub-Signature-256": sign(body),
+        "X-GitHub-Event": "pull_request",
+      },
+      body,
+    });
+
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fakeOctokit.checks.listForRef).toHaveBeenCalledTimes(1);
+    expect(fakeOctokit.checks.listForRef.mock.calls[0][0]).toMatchObject({
+      owner: "acme", repo: "widgets", ref: "a11ce555", check_name: "approval-freshness/evaluated",
+    });
+    // The guard's whole point: the existing success is left intact, no new run is minted.
+    expect(fakeOctokit.checks.create).not.toHaveBeenCalled();
+  });
+
+  it("pull_request 'synchronize' skips the pre-existing-success read entirely (a fresh push SHA has nothing to clobber)", async () => {
+    const handle = await startEngine();
+    openEngines.push(handle);
+    const payload = {
+      action: "synchronize",
+      pull_request: { number: 15, head: { sha: "c0ffee00" } },
+      repository: { owner: { login: "acme" }, name: "widgets" },
+    };
+    const body = JSON.stringify(payload);
+
+    const res = await fetch(`${handle.baseUrl}/webhook`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Hub-Signature-256": sign(body),
+        "X-GitHub-Event": "pull_request",
+      },
+      body,
+    });
+
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fakeOctokit.checks.listForRef).not.toHaveBeenCalled();
+    expect(fakeOctokit.checks.create).toHaveBeenCalledTimes(1);
+    expect(fakeOctokit.checks.create.mock.calls[0][0]).toMatchObject({ status: "in_progress" });
+  });
+
+  it("pull_request 'opened' with a missing head SHA is ignored (fail closed, never enqueued)", async () => {
+    const handle = await startEngine();
+    openEngines.push(handle);
+    const payload = {
+      action: "opened",
+      pull_request: { number: 12 }, // no head.sha
+      repository: { owner: { login: "acme" }, name: "widgets" },
+    };
+    const body = JSON.stringify(payload);
+    const activity = (s: ReturnType<typeof handle.engine.queue.stats>) =>
+      s.running + s.waiting + s.completedTotal + s.failedTotal;
+    const before = activity(handle.engine.queue.stats());
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const res = await fetch(`${handle.baseUrl}/webhook`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Hub-Signature-256": sign(body),
+        "X-GitHub-Event": "pull_request",
+      },
+      body,
+    });
+
+    expect(res.status).toBe(202); // already ack'd before routing; the drop is silent to GitHub
+    await new Promise((r) => setTimeout(r, 20));
+    expect(activity(handle.engine.queue.stats())).toBe(before);
+    expect(fakeOctokit.checks.create).not.toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it("pull_request 'labeled' stays a no-op (not in the pending-check action set)", async () => {
+    const handle = await startEngine();
+    openEngines.push(handle);
+    const payload = {
+      action: "labeled",
+      pull_request: { number: 13, head: { sha: "feedface" } },
+      repository: { owner: { login: "acme" }, name: "widgets" },
+    };
+    const body = JSON.stringify(payload);
+    const activity = (s: ReturnType<typeof handle.engine.queue.stats>) =>
+      s.running + s.waiting + s.completedTotal + s.failedTotal;
+    const before = activity(handle.engine.queue.stats());
+
+    const res = await fetch(`${handle.baseUrl}/webhook`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Hub-Signature-256": sign(body),
+        "X-GitHub-Event": "pull_request",
+      },
+      body,
+    });
+
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(activity(handle.engine.queue.stats())).toBe(before);
+    expect(fakeOctokit.checks.create).not.toHaveBeenCalled();
   });
 
   it("valid pull_request 'synchronize' -> 202 and enqueues under the SAME key shape as the review event", async () => {

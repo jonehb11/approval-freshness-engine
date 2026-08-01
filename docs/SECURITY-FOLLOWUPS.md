@@ -46,11 +46,17 @@ relevant facts, all already true in the code and deployment surface:
   than the engine's IAM boundary.
 - **Blast radius is bounded by the App's grant, not by where the key sits.** The App holds
   `pull_requests:write`, `checks:write`, `contents:read` — and explicitly **no**
-  approve / merge / push / administration / actions / workflows / ruleset scope. The worst thing a
-  holder of a leaked key can do is set a check to success or dismiss a review. Both remain **behind
-  GitHub's native "≥ 1 approving review" ruleset rule, which the key cannot alter** — there is no
-  ruleset-write credential anywhere in the system. A leaked fallback key cannot merge code, cannot
-  approve a PR, and cannot weaken the gate it operates under.
+  approve / merge / push / administration / actions / workflows / ruleset scope. A leaked key
+  cannot approve a PR, cannot call merge, and cannot alter the ruleset — there is no ruleset-write
+  credential anywhere in the system. **State the residual honestly, though**
+  ([FAILURE-MODES.md](FAILURE-MODES.md) §4.2): because the enrolled ruleset deliberately runs with
+  `dismiss_stale_reviews_on_push: false` and `require_last_push_approval: false` (the engine owns
+  staleness), the "≥ 1 approving review" the key operates behind need not cover the *current*
+  head. A key holder who **also** has ordinary push access to a PR branch can push a post-approval
+  commit and self-write `success` on it — merging a delta no human reviewed. That defeats the
+  freshness control (never GitHub's review requirement), is identical in power to the
+  engine-runtime copy of the key, and is the real stake of this decision: enabling the fallback
+  **doubles where that power can be stolen from**; it does not create the power.
 - **The workflow is a deterministic echo, not a judgment engine.** It runs with `permissions: {}`,
   has no `workflow_dispatch` and no free-form inputs, mints a short-lived App token, and only ever
   writes the hardcoded literal conclusion `"success"` after a TOCTOU re-verification that a
@@ -62,8 +68,8 @@ relevant facts, all already true in the code and deployment surface:
 - **Option A — Enable the fallback (accept the second custody point).** Blocked PRs get unblocked
   by a fresh human re-approval *even while the engine pod is down*, on GitHub's own infra, within
   about a minute. Cost: the App private key exists in a second custody domain (org Actions
-  secrets), widening the set of people/systems that could in principle exfiltrate it — bounded, as
-  above, to "set a check green or dismiss a review, never merge/approve/alter the gate."
+  secrets), widening the set of people/systems that could in principle exfiltrate it — bounded as
+  described in the blast-radius bullet above, **including its freshness-defeat residual**.
 - **Option B — Omit the fallback (single custody point, still fail-closed).** The key lives only in
   the engine's Secrets Manager path. During an engine outage, freshly-pushed PRs stay natively
   blocked and wait for the engine to return **or** for an org owner's audited break-glass. This is

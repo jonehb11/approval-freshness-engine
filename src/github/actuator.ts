@@ -19,7 +19,7 @@ export interface ActuationContext {
   dryRun: boolean;           // shadow mode: log only, no writes
 }
 
-const CHECK_NAME = "approval-freshness/evaluated";
+export const CHECK_NAME = "approval-freshness/evaluated";
 
 // A minimal actuation context for check-only writes (pending / fresh-approval echo),
 // where there is no ladder Decision, no reviews to dismiss, and no reviewers to re-request.
@@ -90,7 +90,7 @@ export async function actuate(decision: Decision, ctx: ActuationContext): Promis
  * conclusions in a code path that was *meant* to be fail-closed (e.g. a caught error, an
  * ambiguous evaluation, a timeout), that would be a silent fail-OPEN bug: the merge would be
  * allowed even though nothing verified it should be. So the type signature below forbids them
- * at compile time, and test/no_approve_path.test.ts additionally greps all of src/ to guarantee
+ * at compile time, and test/check_conclusion_guard.test.ts additionally greps all of src/ to guarantee
  * the literal strings "neutral" and "skipped" never appear as conclusions, so a future edit
  * cannot reintroduce them even by passing a wider string type through carelessly.
  *
@@ -120,13 +120,19 @@ async function setCheck(ctx: ActuationContext, conclusion: "success" | "failure"
  * or absence.
  *
  * @param ctx - The CheckOnlyContext (no Decision, no reviews involved yet).
+ * @param summary - Optional human-facing summary for the check UI. Callers on the push
+ *   ("synchronize") path use the default "evaluating" text; PR-lifecycle callers (opened /
+ *   reopened / ready_for_review) pass an honest "waiting for an approval" message instead —
+ *   on those events the engine is NOT evaluating anything (there is no post-approval delta
+ *   yet), and claiming otherwise would mislead anyone auditing the check against the decision
+ *   log. Display text only: the check's status is "in_progress" (non-passing) either way.
  */
-export async function setCheckPending(ctx: CheckOnlyContext): Promise<void> {
+export async function setCheckPending(ctx: CheckOnlyContext, summary?: string): Promise<void> {
   if (ctx.dryRun) return; // shadow mode: no writes
   await withRateLimit(() => ctx.octokit.checks.create({
     owner: ctx.owner, repo: ctx.repo, name: CHECK_NAME, head_sha: ctx.headSha,
     status: "in_progress",
-    output: { title: CHECK_NAME, summary: "Approval-freshness engine is evaluating this change..." },
+    output: { title: CHECK_NAME, summary: summary ?? "Approval-freshness engine is evaluating this change..." },
   }));
 }
 

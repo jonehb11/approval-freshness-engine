@@ -2,8 +2,8 @@ import { createServer, IncomingMessage, ServerResponse, Server } from "node:http
 import { pathToFileURL } from "node:url";
 import { verifyWebhookSignature } from "./github/auth.js";
 import { handleFreshApproval } from "./github/freshApproval.js";
-import { setCheckPending } from "./github/actuator.js";
-import { getOctokit } from "./github/client.js";
+import { setCheckPending, CHECK_NAME } from "./github/actuator.js";
+import { getOctokit, withRateLimit } from "./github/client.js";
 import { WorkQueue } from "./runtime/queue.js";
 import { createMetrics, queueMetricsHooks, sampleQueueGauges, Metrics } from "./observability/metrics.js";
 
@@ -64,6 +64,19 @@ const KNOWN_EVENT_LABELS = new Set(["pull_request", "pull_request_review", "ping
 function normalizeEventLabel(eventType: string | undefined | null): string {
   return eventType && KNOWN_EVENT_LABELS.has(eventType) ? eventType : "other";
 }
+
+// pull_request actions that should immediately publish an in_progress check on the PR's current
+// head SHA. All of them are moments where a head SHA becomes (or becomes again) the thing the
+// required check will be evaluated against, and where the developer-visible state would
+// otherwise be an opaque "no check at all".
+//
+// SECURITY: this set is UX-only and introduces no new producer of check success. `in_progress`
+// is a non-completed check status, so it cannot satisfy the required status check any more than
+// a missing check can — the merge stays natively blocked either way (see README.md "the merge
+// equation"). Adding an action here can therefore never weaken the gate; it only changes what
+// humans see while the gate is still closed. The two producers of SUCCESS remain exactly the
+// engine's PRESERVE verdict and the fresh-approval echo, neither of which is reachable from here.
+const PENDING_CHECK_PR_ACTIONS = new Set(["synchronize", "opened", "reopened", "ready_for_review"]);
 
 interface RequestContext {
   webhookSecret: string;
@@ -280,28 +293,81 @@ function enqueueWebhookEvent(eventType: string | undefined, payload: any, delive
     return;
   }
 
-  // On push receipt (pull_request "synchronize"), immediately mark the check in_progress on
-  // the new head SHA. This is UX-only, not a safety mechanism (a new SHA never inherits a
-  // prior SHA's success — required checks match per head SHA — and in_progress is itself a
-  // non-passing state either way) — it tells developers "the engine saw your push and is
-  // evaluating" instead of an opaque missing check.
-  if (eventType === "pull_request" && action === "synchronize") {
+  // PR lifecycle events that expose a head SHA the required check will be evaluated against
+  // (PENDING_CHECK_PR_ACTIONS above): immediately mark the check in_progress on that SHA.
+  //
+  //  - "synchronize" (a push): the new head SHA never inherits the prior SHA's success —
+  //    required checks match per head SHA — so the PR is already blocked; this just tells the
+  //    developer "the engine saw your push and is evaluating" instead of showing nothing.
+  //  - "opened" / "reopened" / "ready_for_review": before this, a brand-new PR showed NO check
+  //    at all, which reads as "expected — waiting" with no indication the engine is even
+  //    installed. An in_progress check makes the engine's presence and its "waiting for a first
+  //    approval" state legible from the moment the PR exists.
+  //
+  // This whole branch is UX-only, never a safety mechanism: "in_progress" is a non-completed
+  // status, so it satisfies nothing and blocks exactly as hard as the missing check it replaces.
+  // It introduces no third producer of check success (see PENDING_CHECK_PR_ACTIONS' comment).
+  if (eventType === "pull_request" && typeof action === "string" && PENDING_CHECK_PR_ACTIONS.has(action)) {
     const owner = payload?.repository?.owner?.login;
     const repo = payload?.repository?.name;
     const prNumber = payload?.pull_request?.number;
     const headSha = payload?.pull_request?.head?.sha;
     if (!owner || !repo || typeof prNumber !== "number" || typeof headSha !== "string" || headSha === "") {
-      console.error(`[${deliveryId}] pull_request synchronize payload missing repository/PR/head coordinates; skipping.`);
+      console.error(`[${deliveryId}] pull_request ${action} payload missing repository/PR/head coordinates; skipping.`);
       ctx.metrics.webhooksTotal.labels(label, "ignored").inc();
       return;
     }
 
+    // Bounded `kind` label for afe_task_duration_seconds: derived from the closed
+    // PENDING_CHECK_PR_ACTIONS set, never from the raw action string, so this can never become
+    // an unbounded-cardinality label source. "synchronize" keeps its own kind (it is the push
+    // path the ladder will hang off at deploy time); the rest share "pr_lifecycle".
+    const kind = action === "synchronize" ? "synchronize" : "pr_lifecycle";
+
     const key = `${owner}/${repo}#${prNumber}`;
     ctx.metrics.webhooksTotal.labels(label, "verified").inc();
     const accepted = ctx.queue.enqueue(key, async () => {
-      console.log(`[${deliveryId}] key=${key} processing pull_request synchronize`);
+      console.log(`[${deliveryId}] key=${key} processing pull_request ${action}`);
       const octokit = getOctokit(process.env.GITHUB_TOKEN);
-      await setCheckPending({ octokit, owner, repo, headSha, dryRun: process.env.DRY_RUN === "true" });
+      const dryRun = process.env.DRY_RUN === "true";
+
+      // Liveness guard for the non-push actions (fail-closed in every branch): "reopened" and
+      // "ready_for_review" (and, in the rare shared-SHA case, "opened") fire on a head SHA that
+      // may ALREADY carry a completed `success` check run from one of the two legitimate
+      // producers — a prior PRESERVE verdict or a fresh-approval echo on this exact SHA (e.g.
+      // approve → close → reopen: reviews and per-SHA check runs both survive a close/reopen).
+      // An unconditional checks.create here would mint a NEW run that supersedes that success
+      // with an in_progress one nothing is wired to complete, silently re-blocking a PR whose
+      // approval state never changed — the exact opposite of this branch's UX goal. So for
+      // those actions, read the SHA's existing runs first and skip the pending write if a
+      // completed success is already present. Safety is unaffected in every direction: skipping
+      // a write can never satisfy anything; a spoofed same-named success from a foreign App
+      // would at most suppress this cosmetic pending write (the integration_id pin still
+      // rejects it as a merge gate); and if the read itself fails, the thrown error just fails
+      // this UX-only task and no pending is written. "synchronize" skips the read entirely — a
+      // freshly-pushed head SHA cannot already carry an approval-derived success, and required
+      // checks match per head SHA, so there is nothing to clobber.
+      if (action !== "synchronize" && !dryRun) {
+        const existing = await withRateLimit(() => octokit.checks.listForRef({
+          owner, repo, ref: headSha, check_name: CHECK_NAME, per_page: 100,
+        }));
+        const alreadySucceeded = (existing.data.check_runs ?? []).some(
+          (r) => r.status === "completed" && r.conclusion === "success",
+        );
+        if (alreadySucceeded) {
+          console.log(`[${deliveryId}] key=${key} head ${headSha} already carries a completed success check; leaving it intact (no pending write).`);
+          return;
+        }
+      }
+
+      // Honest summary per action: on a push the engine is (per the deploy-time ladder wiring)
+      // evaluating the delta; on open/reopen/ready-for-review there is nothing to evaluate yet —
+      // the check is waiting for a human approval on this head. Display text only; the check is
+      // a non-passing "in_progress" either way.
+      const summary = action === "synchronize"
+        ? undefined // setCheckPending's default: "…is evaluating this change…"
+        : "Waiting for a human approval on this pull request's current head commit. A fresh approval on the exact head SHA turns this check green.";
+      await setCheckPending({ octokit, owner, repo, headSha, dryRun }, summary);
       // Fall through intentionally ends here for now: the delta evaluation itself is the
       // implementation stub below (ladder + actuator wiring at deploy time).
       // Implementation stub for all other pull_request / pull_request_review actions:
@@ -309,15 +375,16 @@ function enqueueWebhookEvent(eventType: string | undefined, payload: any, delive
       // and then use the Actuator to preserve or dismiss approvals.
       // In a real implementation we would invoke evaluate() from src/stages/ladder.ts
       // and actuate() from src/github/actuator.ts
-    }, { kind: "synchronize", deliveryId });
+    }, { kind, deliveryId });
 
     if (!accepted) {
-      console.warn(`[${deliveryId}] key=${key} queue overflow: pull_request synchronize task dropped.`);
+      console.warn(`[${deliveryId}] key=${key} queue overflow: pull_request ${action} task dropped.`);
     }
     return;
   }
 
-  // Any other pull_request / pull_request_review action is implementation-stub territory: no-op.
+  // Any other pull_request / pull_request_review action ("labeled", "edited", "closed",
+  // "review_requested", …) is implementation-stub territory: no-op.
   ctx.metrics.webhooksTotal.labels(label, "ignored").inc();
 }
 
