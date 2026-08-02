@@ -107,11 +107,39 @@ confirming the hardening did not simply make the engine refuse everything.
 |---|---|
 | Engine offline (reserved concurrency 0) for **5+ minutes**, push onto an approved PR | Check never went green; merge stayed `blocked` the entire time. No timer, no auto-recovery, no fail-open |
 | Engine restored | Next push evaluated normally |
+| **Engine offline, human approves the current head** | **The fallback workflow flipped the check green with the engine still dead.** Full drill below |
 | Credentials removed (`GITHUB_PRIVATE_KEY` accidentally dropped from the function env — a genuine operator error made during this exercise) | Engine logged `processing error`, wrote **no check at all**, merge stayed blocked. Fail-closed under credential loss, proven by accident |
 | Unsigned POST to the endpoint | `401` |
 | Tampered HMAC signature | `401` |
 | Signed request with malformed JSON | `400` |
 | Signed `ping` | `200 pong` |
+
+### 2.6 The outage drill — developers can self-unblock with the engine dead
+
+README step 6.4, executed end to end. This is the liveness half of the fail-safe story, and the
+last piece that had been unproven.
+
+| Step | Result |
+|---|---|
+| Baseline PR approved, check green | pass |
+| Engine taken **fully offline** (reserved concurrency 0) | pass |
+| Push during the outage | **No check written at all; merge `blocked`** |
+| **Human approves the current head, engine still dead** | **Check flipped to `completed/success`** |
+| Attribution of that check | **`app=approval-freshness-engine(4260922)`** — the exact identity the ruleset pins |
+| Who actually wrote it | The GitHub Actions workflow, running as `github-actions(15368)`, having minted an App installation token |
+| Merge box during the outage | `clean` — the developer can merge |
+| Engine restored | pass |
+
+**Why the attribution line is the whole point.** The workflow runs on GitHub's infrastructure as
+the `github-actions` bot, which the ruleset does *not* accept. It authenticates as the engine's
+**App** and writes the check under that identity, which the ruleset does. So the unblock path
+survives the engine's total death without ever weakening the pin — and a check with the right
+name from any *other* identity is still rejected.
+
+The cost of this capability is stated plainly in
+[SECURITY-FOLLOWUPS.md](SECURITY-FOLLOWUPS.md) Item 1: it requires a second copy of the App
+private key in Actions secrets. An org may decline it and remain fully fail-closed, accepting that
+during an outage blocked PRs wait for the engine instead of for a reviewer.
 
 ---
 
