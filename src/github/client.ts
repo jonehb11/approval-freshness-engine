@@ -135,31 +135,69 @@ export function getOctokit(token?: string): Octokit {
  *
  * @param fn - The GitHub API call to attempt, retrying on rate-limit responses.
  */
+/**
+ * The longest this will ever sleep before giving up. A rate-limit reset can be up to an hour
+ * away, and the primary-limit branch below used to wait for it — which is impossible inside a
+ * Lambda invocation (30s timeout) and undesirable in a pod (the task holds a slot for an hour).
+ * Waiting past the host's own deadline does not "retry later", it just gets the process killed
+ * mid-write. Better to fail fast, fail CLOSED (no check written → merge stays blocked), and let
+ * the next push or a fresh approval re-drive the evaluation.
+ */
+const MAX_BACKOFF_MS = 20_000;
+
+/**
+ * Parses a Retry-After header. The RFC permits either delta-seconds OR an HTTP-date, and GitHub
+ * has historically sent seconds — but an unguarded parseInt on a date yields NaN, and
+ * setTimeout(NaN) fires immediately, which burns every retry in a few milliseconds against a
+ * server that just asked us to slow down. That is the opposite of backoff.
+ */
+function parseRetryAfterMs(raw: unknown): number | null {
+  if (typeof raw !== "string" && typeof raw !== "number") return null;
+  const s = String(raw).trim();
+  const secs = Number(s);
+  if (Number.isFinite(secs) && secs >= 0) return secs * 1000;
+  const date = Date.parse(s);
+  if (Number.isFinite(date)) return Math.max(0, date - Date.now());
+  return null;
+}
+
 export async function withRateLimit<T>(fn: () => Promise<T>): Promise<T> {
+  let lastError: any;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       return await fn();
     } catch (e: any) {
-      if (e.status === 403 && e.response?.headers) {
+      lastError = e;
+      // 403 is the primary-limit shape; 429 is what secondary (abuse) limits increasingly use.
+      if ((e.status === 403 || e.status === 429) && e.response?.headers) {
         const reset = e.response.headers['x-ratelimit-reset'];
-        const retryAfter = e.response.headers['retry-after'];
-        // Handle secondary rate limits (retry-after)
-        if (retryAfter) {
-          const delay = withJitter(parseInt(retryAfter, 10) * 1000);
-          await new Promise(r => setTimeout(r, delay));
+        const retryAfterMs = parseRetryAfterMs(e.response.headers['retry-after']);
+
+        // Secondary rate limit — GitHub told us exactly how long to wait.
+        if (retryAfterMs !== null) {
+          if (retryAfterMs > MAX_BACKOFF_MS) {
+            throw new Error(`GitHub asked for a ${Math.round(retryAfterMs / 1000)}s backoff, longer than this host can wait; failing closed.`);
+          }
+          await new Promise(r => setTimeout(r, withJitter(retryAfterMs)));
           continue;
         }
-        // Handle primary rate limits (x-ratelimit-reset)
-        else if (reset && e.response.headers['x-ratelimit-remaining'] === '0') {
-          const delay = withJitter(Math.max(0, parseInt(reset, 10) * 1000 - Date.now()) + 1000);
-          await new Promise(r => setTimeout(r, delay));
+
+        // Primary rate limit — the budget is exhausted until the reset timestamp.
+        if (reset && e.response.headers['x-ratelimit-remaining'] === '0') {
+          const waitMs = Math.max(0, Number(reset) * 1000 - Date.now()) + 1000;
+          if (!Number.isFinite(waitMs) || waitMs > MAX_BACKOFF_MS) {
+            throw new Error(`GitHub primary rate limit exhausted; reset is ${Number.isFinite(waitMs) ? Math.round(waitMs / 1000) + "s" : "an unknown time"} away, longer than this host can wait; failing closed.`);
+          }
+          await new Promise(r => setTimeout(r, withJitter(waitMs)));
           continue;
         }
       }
       throw e;
     }
   }
-  throw new Error("GitHub API rate limit retries exhausted.");
+  // Preserve the underlying error's status/message: "retries exhausted" alone tells an operator
+  // nothing about WHICH limit was hit, which is the only actionable part.
+  throw new Error(`GitHub API rate limit retries exhausted (last status ${lastError?.status ?? "unknown"}: ${String(lastError?.message ?? "").slice(0, 160)})`);
 }
 
 /**

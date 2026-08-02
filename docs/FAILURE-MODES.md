@@ -341,6 +341,53 @@ the operator to restore native stale-dismissal afterwards.
   protection before this engine existed, so its absence is not a regression against the baseline.
   It is still worth having, because it turns a silent two-switch mistake into a page.
 
+### 4.1b The mass-PR burst — the most likely cause of a visible incident
+
+**Scenario** (raised in review, and the sharpest sizing question anyone has asked): a version bump
+is opened across **200 repositories**, each PR is approved, and then one small change is pushed to
+all of them. Two hundred post-approval evaluations arrive at once.
+
+**It does not fail open.** Every failure below results in a check that is never written, which is
+a blocked merge. But this is the scenario most likely to *look* like an outage, so it is worth
+being precise about.
+
+**What the burst actually costs.** ~200 evaluations x ~12-15 calls = **2,400-3,000 API calls in a
+couple of minutes**. Against the installation ceiling (12,500/hour for a large org, 15,000 on
+Enterprise Cloud) a single burst is comfortably absorbed — roughly a fifth of the hourly budget.
+Several such bursts in the same hour, on top of normal traffic, is where the primary limit bites.
+
+**The primary limit is not the binding constraint here — GitHub's SECONDARY limits are.** Those
+cap concurrent requests and, critically, *content-creating* requests. Each evaluation writes at
+least a pending check and a terminal check; a dismissal adds a review dismissal and a comment. Two
+hundred evaluations therefore attempt **400-800 write requests within about a minute**, which
+exceeds GitHub's documented content-creation allowance and returns 403/429 with `Retry-After`.
+
+**The architectural asymmetry this exposes.** The pod deployment bounds total concurrent work with
+`WorkQueue` (`AFE_WORKER_CONCURRENCY`, default 16). **The Lambda deployment has no equivalent** —
+`deploy/lambda/handler.ts` deliberately drops the queue because Lambda gives one delivery per
+invocation, and per-SHA idempotency makes that safe *for correctness*. It is not equivalent for
+*rate-limit pressure*: 200 deliveries become up to 200 concurrent invocations, each independently
+calling GitHub, with nothing coordinating them. Correct, and simultaneously the worst possible
+shape for a secondary limit.
+
+**Mitigations, in the order worth doing them.**
+1. **Set reserved concurrency on the function** (e.g. 20-25). This is the one-line version of the
+   pod's concurrency bound: Lambda paces the herd instead of GitHub rejecting it. Cost: deliveries
+   beyond the cap are throttled, and GitHub does **not** automatically redeliver a failed App
+   webhook, so those PRs stay blocked until the next push or a fresh approval. Safe, not silent.
+2. **Put SQS between the endpoint and the engine** for any org with this traffic shape. That
+   restores real queueing — buffering, controlled drain rate, and retries that survive the
+   invocation — and is the architecturally correct answer rather than a mitigation.
+3. **Cache the two most repeated reads** (`pulls.get`, `listReviews`) per delivery.
+
+**Backoff hardening already applied** (`src/github/client.ts`): `Retry-After` is now parsed for
+both delta-seconds *and* the HTTP-date form the RFC permits — the previous `parseInt` produced
+`NaN` on a date, and `setTimeout(NaN)` fires immediately, so three "retries" completed in
+microseconds against a server that had just asked for a pause. 429 is now treated as a rate limit
+alongside 403, waits longer than the host can survive fail closed immediately rather than being
+killed mid-write, and the thrown error carries the underlying status so an operator can tell which
+limit was hit. Covered by `test/rate_limit_backoff.test.ts`.
+
 ### 4.2 CRITICAL — key leak can merge unreviewed code, because stale approvals still count
 
 `.github/workflows/fresh-approval-fallback.yaml:41-47` states, as Mitigation 3 of the key-custody

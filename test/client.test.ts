@@ -63,7 +63,7 @@ describe("withRateLimit (ported behavior: 3 attempts, retry-after + x-ratelimit-
         calls++;
         throw rateLimitError({ "retry-after": "0" });
       }),
-    ).rejects.toThrow("GitHub API rate limit retries exhausted.");
+    ).rejects.toThrow(/GitHub API rate limit retries exhausted/);
     expect(calls).toBe(3);
   });
 });
