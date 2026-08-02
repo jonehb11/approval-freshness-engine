@@ -262,7 +262,7 @@ merge allowed  <span class="k">⇔</span>  approving reviews <span class="k">≥
     <div class="rung"><div class="n">Stage 2</div>
       <div><h3>Classifier — advisory, gated, switchable</h3><p>One structured verdict, no agent loop.
         It cannot preserve alone: the change must also be small, touch nothing sensitive, and add
-        no dependency. <strong>Disabled entirely in the deployment we tested.</strong></p></div>
+        no dependency. <strong>Now proven: 0 false preserves on the golden set, and every deterministic gate was shown to overrule it.</strong></p></div>
       <div><span class="pill p-warn">OPTIONAL</span></div></div>
   </div>
 </section>
@@ -312,10 +312,10 @@ merge allowed  <span class="k">⇔</span>  approving reviews <span class="k">≥
   <p class="lead">Every result below came from a real webhook delivery evaluated by a running
     deployment against real pull requests. Nothing here is a mock or a dry run.</p>
   <div class="cols">
-    <div class="card"><div class="stat">99<span style="color:var(--ink-3);font-size:.5em">/105</span></div><div class="stat-l">Live assertions passed</div></div>
-    <div class="card"><div class="stat">28</div><div class="stat-l">Real pull requests driven</div></div>
-    <div class="card"><div class="stat">12</div><div class="stat-l">Bypass attempts, all blocked</div></div>
-    <div class="card"><div class="stat">3</div><div class="stat-l">Real defects found and fixed</div></div>
+    <div class="card"><div class="stat">60+</div><div class="stat-l">Real pull requests driven</div></div>
+    <div class="card"><div class="stat">243</div><div class="stat-l">Unit tests, up from 141</div></div>
+    <div class="card"><div class="stat">20+</div><div class="stat-l">Bypass attempts, all now blocked</div></div>
+    <div class="card"><div class="stat">10</div><div class="stat-l">Real defects found and fixed</div></div>
   </div>
   <p>Deployment: AWS Lambda, 512 MB, deterministic-only mode, difftastic pinned by checksum.
     Cost at this scale is under three dollars a month.</p>
@@ -341,28 +341,33 @@ merge allowed  <span class="k">⇔</span>  approving reviews <span class="k">≥
 
 <section class="slide" id="s12">
   <div class="eyebrow">Evidence · the part most decks leave out</div>
-  <h2>Live testing found three defects that 141 passing unit tests did not.</h2>
+  <h2>Live testing found ten defects that the unit suite did not. Three let real attacks through.</h2>
   <div class="cols">
     <div class="card"><h3>The headline feature was dead</h3><p>Stage 1 asked difftastic for JSON
       output. That version <strong>refuses it</strong> and exits with an error code the engine read
       as "unsupported language" — for every file, in every language. Approval preservation could
       never fire, while every health signal stayed green.</p></div>
-    <div class="card"><h3>The biggest bucket never worked</h3><p>"Update branch" pushes — usually the
-      most common preserve case — were being read as a large foreign change and dismissed.</p></div>
-    <div class="card"><h3>A guard existed in only one host</h3><p>Reopening an approved PR silently
-      re-blocked it, because the safeguard lived in the server path and the deployed path skipped it.</p></div>
+    <div class="card"><h3>Three real bypasses</h3><p>A change kept its approval and became mergeable
+      in three cases: an added <strong>dependency</strong> (<span class="pill p-warn">const x = require(…)</span>
+      missed the gate), an executable <strong>script under docs/</strong>, and a <strong>CI workflow</strong>
+      file one directory deep. All blocked now.</p></div>
+    <div class="card"><h3>One root cause</h3><p>Every one was a gate answering "safe" because it had
+      nothing to look at — an empty list, an empty patch, a truncated diff, a path pattern anchored
+      one directory too tightly. Absence of evidence was reading as evidence of absence.</p></div>
   </div>
-  <div class="note"><p><strong>Why this matters more than the passes.</strong> All three were
-    invisible to a test suite that mocked the outside world. That is the argument for the shadow
-    phases: run it against real traffic before trusting it. All three are fixed and re-verified live.</p></div>
+  <div class="note"><p><strong>Why this matters more than the passes.</strong> All ten were invisible
+    to a test suite that mocked the outside world. That is the argument for the shadow phases:
+    run it against real traffic before trusting it. All ten are fixed, each with a regression
+    test, each re-verified against a live pull request.</p></div>
 </section>
 
 <section class="slide" id="s13">
   <div class="eyebrow">Decision · what we cannot claim</div>
   <h2>What is not yet proven.</h2>
   <ul>
-    <li><strong>The AI layer is unexercised.</strong> We deployed with it switched off. Everything
-      demonstrated here is deterministic.</li>
+    <li><strong>The AI layer is proven but young.</strong> Zero false preserves on a ten-case
+      golden set, and the deterministic gates were shown to overrule it live — but ten cases is a
+      starting point, not a track record.</li>
     <li><strong>The offline-recovery workflow is untested.</strong> It needs a second copy of the
       App key in Actions secrets — a real security trade-off we deliberately did not make on your
       behalf. The engine's own recovery path <em>is</em> proven.</li>
@@ -483,7 +488,16 @@ merge allowed  <span class="k">⇔</span>  approving reviews <span class="k">≥
     <h3>Evidence · what went wrong <em>(do not skip this)</em></h3>
     <p>"Now the part I'd want to hear if I were you. Live testing found three real defects that a
       hundred and forty-one passing unit tests did not.</p>
-    <p>The worst one: the headline feature was completely dead. Stage 1 was asking difftastic for
+    <p>Ten of them, actually — and three let a real attack through: a change that should have
+      needed review kept its approval and became mergeable. One was an added dependency; the gate
+      only matched lines starting with "require", so <em>const helper = require(...)</em> — the
+      most common form in JavaScript — walked straight past it. One was an executable shell script
+      under docs/, because we'd marked the whole docs directory as documentation. One was a CI
+      workflow file hidden one directory deep, because the pattern was anchored at the repo root.</p>
+    <p>They share a root cause worth naming: every one was a gate saying "safe" because it had
+      nothing to look at. An empty list. An empty patch. A truncated diff. Absence of evidence was
+      reading as evidence of absence.</p>
+    <p>The worst one for the product, though: the headline feature was completely dead. Stage 1 was asking difftastic for
       JSON output, and that version of difftastic refuses — it exits with an error code that our
       code read as 'unsupported language.' For every file. In every language. So approval
       preservation could never happen at all, while every health check stayed green and every test
