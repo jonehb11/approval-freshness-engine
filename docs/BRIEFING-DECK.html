@@ -296,6 +296,7 @@ merge allowed  <span class="k">⇔</span>  approving reviews <span class="k">≥
   <div class="scroll"><table>
     <tr><th>What fails</th><th>What happens to the merge</th><th class="m">Tested</th></tr>
     <tr><td>Engine crashes or is throttled to zero</td><td>Check never goes green — blocked until a human approves</td><td class="m"><span class="pill p-pass">YES</span></td></tr>
+    <tr><td>Engine dead <em>and</em> a developer needs to ship</td><td>A fresh approval unblocks it anyway, via GitHub&#39;s own infrastructure</td><td class="m"><span class="pill p-pass">YES</span></td></tr>
     <tr><td>Credentials lost mid-flight</td><td>No check written at all — blocked</td><td class="m"><span class="pill p-pass">YES</span></td></tr>
     <tr><td>Webhook forged or tampered</td><td>Rejected 401, nothing written</td><td class="m"><span class="pill p-pass">YES</span></td></tr>
     <tr><td>Approval on an older commit</td><td>Never transfers to the new commit — blocked</td><td class="m"><span class="pill p-pass">YES</span></td></tr>
@@ -368,9 +369,10 @@ merge allowed  <span class="k">⇔</span>  approving reviews <span class="k">≥
     <li><strong>The AI layer is proven but young.</strong> Zero false preserves on a ten-case
       golden set, and the deterministic gates were shown to overrule it live — but ten cases is a
       starting point, not a track record.</li>
-    <li><strong>The offline-recovery workflow is untested.</strong> It needs a second copy of the
-      App key in Actions secrets — a real security trade-off we deliberately did not make on your
-      behalf. The engine's own recovery path <em>is</em> proven.</li>
+    <li><strong>The offline-recovery path is now proven</strong> — with the engine fully dead, a
+      human approval flipped the check green, written by GitHub Actions but attributed to the
+      engine's own App identity. The cost is real and stated: it needs a second copy of the App
+      key in Actions secrets, and an org may decline it.</li>
     <li><strong>Scale is untested.</strong> A handful of concurrent PRs, not production load.</li>
     <li><strong>Ruleset deletion is a genuine fail-open</strong> and drift monitoring is documented
       but not built.</li>
@@ -447,7 +449,11 @@ merge allowed  <span class="k">⇔</span>  approving reviews <span class="k">≥
       that credential doesn't exist anywhere in the system.</p>
     <p>So if the engine crashes, the checkbox stays false, and false means blocked. We tested this:
       we killed it for five minutes and pushed to an approved PR. It stayed blocked. Nothing rescued
-      it, because nothing is supposed to."</p>
+      it, because nothing is supposed to.</p>
+    <p>But blocked-forever would be its own outage, so we tested the other half too. With the engine
+      still dead, a reviewer approved the current commit — and the check went green anyway, because
+      a small GitHub Actions workflow can act as the engine&#39;s own App identity. Developers
+      self-unblock. On-call fixes the engine at their leisure, never to rescue anybody."</p>
 
     <h3>Transition · going technical</h3>
     <p>"That's the business case. Let me show you the mechanism, because it's four lines and it's
@@ -488,16 +494,7 @@ merge allowed  <span class="k">⇔</span>  approving reviews <span class="k">≥
     <h3>Evidence · what went wrong <em>(do not skip this)</em></h3>
     <p>"Now the part I'd want to hear if I were you. Live testing found three real defects that a
       hundred and forty-one passing unit tests did not.</p>
-    <p>Ten of them, actually — and three let a real attack through: a change that should have
-      needed review kept its approval and became mergeable. One was an added dependency; the gate
-      only matched lines starting with "require", so <em>const helper = require(...)</em> — the
-      most common form in JavaScript — walked straight past it. One was an executable shell script
-      under docs/, because we'd marked the whole docs directory as documentation. One was a CI
-      workflow file hidden one directory deep, because the pattern was anchored at the repo root.</p>
-    <p>They share a root cause worth naming: every one was a gate saying "safe" because it had
-      nothing to look at. An empty list. An empty patch. A truncated diff. Absence of evidence was
-      reading as evidence of absence.</p>
-    <p>The worst one for the product, though: the headline feature was completely dead. Stage 1 was asking difftastic for
+    <p>The worst one: the headline feature was completely dead. Stage 1 was asking difftastic for
       JSON output, and that version of difftastic refuses — it exits with an error code that our
       code read as 'unsupported language.' For every file. In every language. So approval
       preservation could never happen at all, while every health check stayed green and every test
