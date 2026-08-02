@@ -256,19 +256,32 @@
 
 <section class="slide" id="s7">
   <div class="eyebrow">How it works · the entire design in four lines</div>
-  <h2>The merge equation.</h2>
+  <h2>The merge equation — and the half of it people misread.</h2>
   <div class="eq">
 merge allowed  <span class="k">⇔</span>  approving reviews <span class="k">≥</span> 1
                <span class="k">AND</span>  check <span class="k">approval-freshness/evaluated</span> == success
                    on the <span class="k">CURRENT</span> head commit
                    written by the engine's GitHub App <span class="k">only</span>
   </div>
-  <p class="lead">Checks are matched <strong>per commit</strong>, so every new push starts blocked by
-    construction. The App identity is pinned in the ruleset by numeric ID, so a same-named check
-    from any other identity — including GitHub's own Actions bot — is rejected.</p>
-  <p>Only two things can ever turn that check green: the engine proving the change is null, or a
-    real human approving the current commit. <strong>There is no third path</strong>, and that is
-    enforced by a test that scans the codebase.</p>
+  <p class="lead">Both clauses are genuinely required. The question everyone asks next is
+    <em>"so if the engine dislikes my change, am I stuck?"</em> — <strong>No.</strong> Because there
+    are two ways to satisfy that check, and one of them is you.</p>
+  <div class="cols">
+    <div class="card"><h3>Producer 1 — the engine proves nothing changed</h3><p>Formatting, comments,
+      a clean rebase. The receipt from the earlier commit legitimately transfers, so the approval
+      stands and no one is interrupted.</p></div>
+    <div class="card"><h3>Producer 2 — a human approves this commit</h3><p>The approval itself
+      triggers the check. <strong>One action satisfies both clauses at once</strong>: it is the
+      approving review, <em>and</em> it causes the check to go green.</p></div>
+  </div>
+  <div class="note good"><p><strong>Why the check exists at all.</strong> Enrolling a repo turns
+    GitHub's native "dismiss stale approvals" <em>off</em> — and the moment you do, GitHub stops
+    tracking <em>which commit</em> was approved. An approval on commit A would count forever, even
+    on commit Z. The check is what re-binds an approval to a specific commit: think of it as a
+    <strong>per-commit receipt that this exact code was vouched for</strong>, not as the engine's
+    opinion of your work. Seen live: the engine wrote <code>failure</code> and dismissed an
+    approval; the developer re-approved that same commit; the check went green and the merge box
+    went clean. The engine's objection never had to be overturned.</p></div>
 </section>
 
 <section class="slide" id="s8">
