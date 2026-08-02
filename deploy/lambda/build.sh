@@ -19,7 +19,7 @@ npx esbuild deploy/lambda/handler.ts \
 
 # The config file is read at runtime by loadConfig() via AFE_CONFIG_PATH; ship it beside the
 # bundle so the function is self-contained (no S3 fetch, no network read for policy).
-cp config/config.json "$OUT/config/config.json"
+cp config/config.json config/config.stage2.json "$OUT/config/"
 
 cd "$OUT"
 zip -qr function.zip index.js config

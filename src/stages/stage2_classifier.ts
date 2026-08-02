@@ -34,6 +34,23 @@ export async function stage2(delta: Delta, cfg: EngineConfig): Promise<Decision>
     gates.noNewDependencies = true;
     gates.safeRegexSize = true;
 
+    // You cannot classify what you cannot see. GitHub OMITS the `patch` field for binary files
+    // and for very large diffs, so `patchByFile[file]` can legitimately be empty while the file's
+    // content changed substantially. With an empty patch the model is shown nothing, the
+    // sensitive-pattern scan matches nothing, and the new-dependency scan finds nothing — every
+    // content gate passes vacuously and a completely unseen change could be preserved.
+    // Requiring a visible patch for every changed file closes that: an invisible delta can never
+    // be corroborated, so it goes to a human. Conservative for a pure rename (no patch, no
+    // content change), which is rare and costs one re-review.
+    gates.patchVisible = delta.changedFiles.length > 0 &&
+      delta.changedFiles.every((f) => (delta.patchByFile[f] ?? "").trim().length > 0);
+
+    // The same principle one level up: if the diff was longer than the model's input budget it
+    // was CUT before the model saw it, so the verdict describes only the visible prefix. A
+    // payload placed past the cut point would never reach the classifier at all. A partial view
+    // can never corroborate a preserve.
+    gates.fullDiffSeen = !verdict.truncated;
+
     for (const patch of Object.values(delta.patchByFile)) {
       if (patch.length > 500_000) {
         gates.safeRegexSize = false;
@@ -81,7 +98,31 @@ export async function stage2(delta: Delta, cfg: EngineConfig): Promise<Decision>
  * @returns true if a new dependency might be introduced, false otherwise.
  */
 function looksLikeNewDependency(patch: string): boolean {
-  // Cheap heuristic; dependency manifests are denylisted in Stage 0 anyway, this is belt-and-suspenders.
-  return /^\+\s*["']?[\w@/.-]+["']?\s*:\s*["']\^?~?\d/m.test(patch) // json manifest add
-      || /^\+\s*(import|require|use)\s+/m.test(patch);              // new import line
+  // Only ADDED lines matter: a removed import is not a new dependency.
+  const added = patch.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++"));
+  if (added.length === 0) return false;
+
+  for (const raw of added) {
+    const line = raw.slice(1);
+
+    // Dependency-manifest entry, e.g.  "lodash": "^4.17.21"
+    if (/^\s*["']?[\w@/.-]+["']?\s*:\s*["']\^?~?[\d*]/.test(line)) return true;
+
+    // Module loading in the forms real code actually uses. The previous version anchored on the
+    // line STARTING with import/require, which missed the single most common JavaScript form —
+    // `const helper = require("./helper")` — and therefore let a dependency addition through the
+    // gate entirely. Found live: a PR adding exactly that line was PRESERVED. Match the call and
+    // the statement wherever they appear on the line instead of only at its start.
+    if (/\brequire\s*\(/.test(line)) return true;                       // require("x"), = require('x')
+    if (/\bimport\s*\(/.test(line)) return true;                        // dynamic import("x")
+    if (/^\s*import\b/.test(line)) return true;                         // ES/Java/Python import
+    if (/^\s*from\s+[\w.]+\s+import\b/.test(line)) return true;         // python: from x import y
+    if (/^\s*use\s+[\w:]+/.test(line)) return true;                     // rust: use a::b;
+    if (/^\s*#\s*include\b/.test(line)) return true;                    // c/c++
+    if (/^\s*(go\s+)?get\s+[\w.\-/]+\/[\w.\-/]+/.test(line)) return true; // go get github.com/x/y
+
+    // A bare quoted module path on its own line — Go import blocks, and lockfile-ish additions.
+    if (/^\s*(_\s+|\w+\s+)?"[\w.\-]+\.[\w.\-]+\/[\w.\-/]+"\s*$/.test(line)) return true;
+  }
+  return false;
 }

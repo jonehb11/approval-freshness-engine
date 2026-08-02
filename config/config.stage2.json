@@ -4,8 +4,8 @@
   "selfGovernedRepos": [
     "jonehb11/approval-freshness-engine"
   ],
-  "_comment_stage2": "false = deterministic-only. Stages 0-1 decide; anything they cannot prove null dismisses to human re-review with reason deterministic_only_mode. No model provider is wired in this deployment.",
-  "stage2Enabled": false,
+  "_comment_stage2": "STAGE 2 ENABLED. Used only by the Stage-2 validation deployment (AFE_CONFIG_PATH points here). The advisory classifier runs, but a PRESERVE still requires every deterministic corroboration gate below to agree.",
+  "stage2Enabled": true,
   "denylist": {
     "paths": [
       "**/*.tf",

@@ -26,7 +26,12 @@ export interface EngineConfig {
   trivialClasses: {
     docs: string[];
     lockfiles: { files: string[]; requireBotAuthor: string[] };
-    generated: { files: string[]; requireDeterministicRegen: boolean };
+    /**
+     * Generated artifacts. `requireDeterministicRegen` is an operator assertion that these are
+     * machine-produced; `requireBotAuthor` is the part the engine can actually verify, and both
+     * must hold before a generated file counts as trivial (see stage1_difftastic.ts).
+     */
+    generated: { files: string[]; requireDeterministicRegen: boolean; requireBotAuthor?: string[] };
   };
   injectionCanaries: RegExp[];
   sensitivePatterns: RegExp[];
@@ -83,7 +88,11 @@ const ConfigSchema = z.object({
   trivialClasses: z.object({
     docs: z.array(z.string()),
     lockfiles: z.object({ files: z.array(z.string()), requireBotAuthor: z.array(z.string()) }),
-    generated: z.object({ files: z.array(z.string()), requireDeterministicRegen: z.boolean() }),
+    generated: z.object({
+      files: z.array(z.string()),
+      requireDeterministicRegen: z.boolean(),
+      requireBotAuthor: z.array(z.string()).optional(),
+    }),
   }),
   injectionCanaries: patternArray("injectionCanaries"),
   sensitivePatterns: patternArray("sensitivePatterns"),
@@ -111,6 +120,26 @@ function disabledModel(): EngineConfig["model"] {
     },
     maxInputChars: 20000,
   };
+}
+
+/**
+ * Selects the Stage 2 provider. Only reached when stage2Enabled is true; a deployment that has
+ * the classifier switched off never constructs a provider at all, so a missing/incorrect model
+ * configuration cannot affect it.
+ *
+ * An unknown provider name THROWS at startup rather than silently degrading: a deployment that
+ * believes Stage 2 is on but has no working provider would dismiss every non-null delta with
+ * `model_error`, which is safe but is a failure nobody asked for. Better to refuse to boot.
+ */
+async function resolveModel(name: string | undefined): Promise<EngineConfig["model"]> {
+  const provider = (name || "bedrock").toLowerCase();
+  if (provider === "bedrock") {
+    const { bedrockModel } = await import("../model/bedrock.js");
+    const modelId = process.env.MODEL_ID;
+    if (!modelId) throw new Error("MODEL_ID must be set when stage2Enabled is true and MODEL_PROVIDER=bedrock");
+    return bedrockModel({ modelId, region: process.env.AWS_REGION || "us-east-1" });
+  }
+  throw new Error(`unknown MODEL_PROVIDER "${provider}" (supported: bedrock)`);
 }
 
 /**
@@ -163,6 +192,6 @@ export async function loadConfig(): Promise<EngineConfig> {
     difftasticBin,
     selfGovernedRepos,
     stage2Enabled,
-    model: disabledModel(),
+    model: stage2Enabled ? await resolveModel(process.env.MODEL_PROVIDER) : disabledModel(),
   };
 }

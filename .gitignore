@@ -3,3 +3,4 @@ dist/
 .env
 .DS_Store
 dist-lambda/
+eval/.bench.mjs

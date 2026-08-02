@@ -8,6 +8,14 @@ export interface ModelVerdict {
   reasons: string[];
   signals?: Record<string, boolean>;
   promptVersion: string;
+  /**
+   * True when the diff was longer than `cfg.model.maxInputChars` and had to be cut before the
+   * model saw it. A verdict formed on a partial diff says nothing about the part that was cut,
+   * so Stage 2 refuses to preserve on it (see the `fullDiffSeen` gate). Without this flag the
+   * truncation is invisible: a payload placed past the cut point would simply never be shown to
+   * the classifier, and a confident "low" would come back describing only the visible prefix.
+   */
+  truncated: boolean;
 }
 
 /**
@@ -21,11 +29,12 @@ export interface ModelVerdict {
  * @returns A promise resolving to a strictly validated ModelVerdict.
  */
 export async function classifyImpact(delta: Delta, cfg: EngineConfig): Promise<ModelVerdict> {
-  const semanticDelta = Object.entries(delta.patchByFile)
+  const fullDelta = Object.entries(delta.patchByFile)
     .map(([f, p]) => `--- ${f}\n${p}`).join("\n\n")
     .replace(/```/g, "\\`\\`\\`") // Defang markdown fences
-    .replace(/<(system|instruction|user|assistant|diff|\/)/gi, "<\\$1") // Defang xml-like prompt injections
-    .slice(0, cfg.model.maxInputChars); // hard bound on input size
+    .replace(/<(system|instruction|user|assistant|diff|\/)/gi, "<\\$1"); // Defang xml-like prompt injections
+  const truncated = fullDelta.length > cfg.model.maxInputChars;
+  const semanticDelta = fullDelta.slice(0, cfg.model.maxInputChars); // hard bound on input size
   const meta = {
     files: delta.changedFiles.length,
     addedLines: delta.addedLines,
@@ -73,6 +82,7 @@ export async function classifyImpact(delta: Delta, cfg: EngineConfig): Promise<M
     reasons: parsed.reasons.slice(0, 8).map(String),
     signals: parsed.signals ?? {},
     promptVersion: PROMPT_VERSION,
+    truncated,
   };
 }
 

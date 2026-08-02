@@ -212,8 +212,22 @@ function isTrivialClass(file: string, delta: Delta, cfg: EngineConfig): boolean 
     return delta.commitAuthors.length > 0 &&
            delta.commitAuthors.every((a) => a !== null && tc.lockfiles.requireBotAuthor.includes(a));
   }
-  if (tc.generated.requireDeterministicRegen &&
-      tc.generated.files.some((g) => minimatch(file, g, { dot: true }))) return true;
+  if (tc.generated.files.some((g) => minimatch(file, g, { dot: true }))) {
+    // `requireDeterministicRegen` is a POLICY ASSERTION, not a verification: nothing here re-runs
+    // the generator, so on its own it only ever meant "the operator believes these are
+    // regenerable". That made a generated-file preserve depend on the FILENAME alone — a
+    // hand-edited `foo.gen.ts` carrying arbitrary code would have been treated as trivial.
+    //
+    // Authorship is the part that can actually be checked, and it is the property that makes the
+    // assertion credible: a genuinely regenerated artifact is written by CI or a bot, not typed by
+    // a human. Same shape as the lockfile rule, including the empty-array guard — `every()` is
+    // vacuously true for an empty list, so an unattributable commit set must never qualify.
+    if (!tc.generated.requireDeterministicRegen) return false;
+    const allowed = tc.generated.requireBotAuthor ?? [];
+    if (allowed.length === 0) return false; // no allowlist configured → cannot qualify
+    return delta.commitAuthors.length > 0 &&
+           delta.commitAuthors.every((a) => a !== null && allowed.includes(a));
+  }
   return false;
 }
 
