@@ -110,9 +110,29 @@ export async function stage1(delta: Delta, cfg: EngineConfig): Promise<Decision 
   }
 
   if (allStructurallyIdentical) {
-    return preserve(1, "ast_identical",
-      "Zero semantic changes since approval (whitespace/formatting/comments only).",
-      { difftastic: reports });
+    // difftastic ran with --ignore-comments, so "identical" here means identical *modulo
+    // comments*. Adding or rewording a comment is genuinely non-impacting and should not cost a
+    // re-review — that is the whole point of preserving it.
+    //
+    // But not every comment is inert. `// eslint-disable-next-line no-eval` switches off a
+    // security lint, `//go:build linux || windows` changes what compiles, `// @ts-ignore`
+    // suppresses type checking. Those are behaviour changes wearing a comment's clothes, and
+    // ignoring comments makes them INVISIBLE to the diff. So any changed line carrying a
+    // directive forfeits the preserve and goes to a human.
+    const directives = findDirectiveComments(delta, cfg);
+    if (directives.length > 0) {
+      console.log(`[stage1] comment-only delta, but directive comments changed: ${directives.slice(0, 5).join(" | ")}`);
+      return null; // fall through: a human decides
+    }
+
+    const commentsChanged = changedLines(delta).length > 0;
+    return commentsChanged
+      ? preserve(1, "comment_only",
+          "Only comments changed since approval; no semantic change, and no directive comments (lint/build/type suppressions) were touched.",
+          { difftastic: reports })
+      : preserve(1, "ast_identical",
+          "Zero semantic changes since approval (whitespace/formatting only).",
+          { difftastic: reports });
   }
 
   // (c) Trivial-class-only: every changed file is in an allowlisted trivial class.
@@ -170,7 +190,11 @@ async function difftasticStructuralChange(
       // preserve path (every file looked unparseable, so ast_identical could never fire).
       // Verified against difftastic 0.69.0, the version pinned in the Dockerfile and the
       // Lambda layer. Keeping the default display costs nothing and cannot regress this way.
-      await run(cfg.difftasticBin, ["--exit-code", approvedTmp, headTmp], {
+      // --ignore-comments: a comment change is not a semantic change, so it must not cost a
+      // re-review. The directive guard in stage1() is what keeps that safe — see the comment
+      // there. Without --ignore-comments, difftastic parses comments as syntax-tree nodes and
+      // reports every typo fix as structural.
+      await run(cfg.difftasticBin, ["--exit-code", "--ignore-comments", approvedTmp, headTmp], {
         timeout: 30000,
         maxBuffer: 10 * 1024 * 1024,
         // Belt and braces: if a future change does want JSON, the opt-in is already here, so
@@ -247,6 +271,41 @@ function isTrivialClass(file: string, delta: Delta, cfg: EngineConfig): boolean 
            delta.commitAuthors.every((a) => a !== null && allowed.includes(a));
   }
   return false;
+}
+
+/** Added and removed lines of the whole delta, without the +/- marker or file headers. */
+function changedLines(delta: Delta): string[] {
+  const out: string[] = [];
+  for (const patch of Object.values(delta.patchByFile)) {
+    for (const line of patch.split("\n")) {
+      if ((line.startsWith("+") || line.startsWith("-")) &&
+          !line.startsWith("+++") && !line.startsWith("---")) {
+        out.push(line.slice(1));
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Finds changed lines carrying a directive — a comment the compiler, linter or type checker
+ * acts on. Scans BOTH added and removed lines: deleting `// eslint-disable-next-line` is as
+ * meaningful as adding one, and re-enabling a rule can break a build just as surely.
+ *
+ * Deliberately matched against the raw changed line rather than only against text proven to be
+ * a comment: a directive that appears anywhere in a delta that difftastic called
+ * comment-only is, by construction, inside a comment — and a false positive here costs one
+ * re-review, while a false negative costs a silently suppressed security rule.
+ */
+function findDirectiveComments(delta: Delta, cfg: EngineConfig): string[] {
+  const hits: string[] = [];
+  for (const line of changedLines(delta)) {
+    if (line.length > 2000) continue; // pathological minified line; not a hand-written directive
+    for (const rx of cfg.directiveCommentPatterns ?? []) {
+      if (rx.test(line)) { hits.push(line.trim().slice(0, 100)); break; }
+    }
+  }
+  return hits;
 }
 
 /**

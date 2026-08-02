@@ -200,5 +200,34 @@ export function stage0(delta: Delta, cfg: EngineConfig): Decision | null {
     }
   }
 
+  // 6. Directive comments. Stage 1 runs difftastic with --ignore-comments so ordinary comment
+  // edits keep an approval (they are genuinely non-impacting). That deliberately makes comments
+  // invisible to the diff — which is exactly why THESE comments must be caught here,
+  // categorically, before any stage can preserve.
+  //
+  // `// eslint-disable-next-line no-eval` switches off a security lint. `//go:build linux` changes
+  // what compiles. `// @ts-ignore` suppresses type checking. Behaviour changes wearing a comment's
+  // clothes.
+  //
+  // This lives in Stage 0 rather than as a Stage 1 fall-through because a fall-through only
+  // declines to preserve AT THAT STAGE — it hands the delta to Stage 2, where a model happy to
+  // call a one-line comment "low impact" can preserve it anyway. Not theoretical: an added
+  // `// @ts-ignore` was PRESERVED live via model_low_impact_gated while Stage 1 was correctly
+  // logging that it had spotted the directive. Categorical dismissal is the only placement that
+  // holds on every path.
+  for (const [file, patch] of Object.entries(delta.patchByFile)) {
+    for (const raw of patch.split("\n")) {
+      if ((!raw.startsWith("+") && !raw.startsWith("-")) || raw.startsWith("+++") || raw.startsWith("---")) continue;
+      const line = raw.slice(1);
+      if (line.length > 2000) continue; // minified line, not a hand-written directive
+      for (const rx of cfg.directiveCommentPatterns ?? []) {
+        if (rx.test(line)) {
+          return dismiss(0, "directive_comment",
+            `Directive comment changed in ${file} (${line.trim().slice(0, 80)}); suppressions and build constraints require human review.`);
+        }
+      }
+    }
+  }
+
   return null; // no hard rule tripped → continue to Stage 1
 }

@@ -33,6 +33,13 @@ export interface EngineConfig {
      */
     generated: { files: string[]; requireDeterministicRegen: boolean; requireBotAuthor?: string[] };
   };
+  /**
+   * Comment text that is NOT inert. A comment-only change normally preserves an approval, but
+   * these carry meaning to a compiler, linter or type checker — suppressing a security lint,
+   * flipping a build constraint, disabling type checking — so a comment matching any of them
+   * must reach a human.
+   */
+  directiveCommentPatterns: RegExp[];
   injectionCanaries: RegExp[];
   sensitivePatterns: RegExp[];
   thresholds: {
@@ -94,6 +101,7 @@ const ConfigSchema = z.object({
       requireBotAuthor: z.array(z.string()).optional(),
     }),
   }),
+  directiveCommentPatterns: patternArray("directiveCommentPatterns"),
   injectionCanaries: patternArray("injectionCanaries"),
   sensitivePatterns: patternArray("sensitivePatterns"),
   thresholds: z.object({

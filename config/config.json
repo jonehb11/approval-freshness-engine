@@ -124,5 +124,24 @@
     "hardMaxFiles": 20,
     "modelTimeoutMs": 8000,
     "stalePendingMs": 900000
-  }
+  },
+  "directiveCommentPatterns": [
+    "/eslint-(disable|enable)/i",
+    "/@ts-(ignore|expect-error|nocheck)/i",
+    "/\\/\\/\\s*go:(build|generate|embed|linkname)/i",
+    "/^\\s*[+]build\\s/i",
+    "/#\\s*pragma\\b/i",
+    "/\\bnoqa\\b/i",
+    "/#\\s*type:\\s*ignore/i",
+    "/\\b(pylint|mypy|flake8):\\s*disable/i",
+    "/\\bnolint\\b/i",
+    "/\\bnosemgrep\\b/i",
+    "/\\bNOSONAR\\b/",
+    "/\\bcodeql\\s*\\[/i",
+    "/\\b(istanbul|c8|v8)\\s+ignore/i",
+    "/\\bprettier-ignore\\b/i",
+    "/\\b(rubocop|swiftlint|checkstyle|spotless|shellcheck)\\s*:?\\s*(disable|off)/i",
+    "/\\bSuppressWarnings\\b/",
+    "/\\bsafety:\\s*ignore/i"
+  ]
 }

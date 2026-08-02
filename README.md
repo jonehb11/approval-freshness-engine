@@ -26,9 +26,11 @@ merge, or push. Worst-case malfunction ≡ today's behavior or a blocked merge. 
   an open-source structural diff tool: it parses both versions of each changed file into syntax
   trees (tree-sitter grammars, ~50 languages) and compares the *trees*, so whitespace, formatting,
   changes produce "zero structural changes" while any change to actual code structure does not.
-  **Comments are syntax-tree nodes, not whitespace**: adding or editing a comment IS a structural
-  change to difftastic, so it does not qualify for `ast_identical` (verified live against
-  difftastic 0.69.0 — see docs/TEST-EVIDENCE.md). The binary is checksum-pinned into the container image. Stage 1 can only **preserve**
+  It runs with `--ignore-comments`, so adding or rewording a comment is preserved too
+  (`comment_only`) — **except** when the comment is a **directive**: `eslint-disable`,
+  `@ts-ignore`, `//go:build`, `noqa`, `nolint`, `nosemgrep` and similar change what the compiler,
+  linter or type checker does, so they are behaviour changes wearing a comment's clothes and are
+  sent to a human (`cfg.directiveCommentPatterns`). The binary is checksum-pinned into the container image. Stage 1 can only **preserve**
   (delta provably null / trivial-class) or pass onward — it has no dismiss path. A file in a
   language difftastic can't parse fails closed: no preserve, continue to Stage 2.
 - **Stage 2 is one structured model call** (`src/stages/stage2_classifier.ts`): a single JSON
@@ -49,6 +51,7 @@ today: stale approval dismissed, re-review requested, merge blocked until a huma
 |---|---|
 | Ran `prettier`/`gofmt`/`black`; formatting-only diff | Stage 1 `ast_identical` → preserve |
 | Re-indented, re-wrapped, added/removed blank lines, added a trailing comma | Stage 1 `ast_identical` → preserve |
+| Added, reworded or removed a **code comment** | Stage 1 `comment_only` → preserve (difftastic runs with `--ignore-comments`) |
 | Edited `docs/**` or any `*.md` only | Stage 1 `trivial_class` (docs) → preserve |
 | Clicked **Update branch** — no conflicts, your PR's own files untouched | Stage 1 `merge_base_only` → preserve¹ |
 | Re-generated a deterministic artifact on an allowlisted `generated` glob | Stage 1 `trivial_class` → preserve |
@@ -63,13 +66,13 @@ today: stale approval dismissed, re-review requested, merge blocked until a huma
 | A branch where **someone other than the PR author** pushed a commit (or a commit GitHub can't attribute to a verified account) | `foreign_author_commit` |
 | A "trivial" change that is thousands of lines / dozens of files | `hard_size_cap` |
 | A diff whose text contains classifier-manipulation strings (prompt-injection canaries) | `injection_canary` |
+| A **directive comment** — `eslint-disable`, `@ts-ignore`, `//go:build`, `noqa`, `nolint`, `nosemgrep` | Comment-only preserves stop here: these suppress a lint, flip a build constraint, or disable type checking |
 | Any change to the engine's own control surface (workflows, ruleset, stages, prompt, echo…) in a self-governed repo | `self_governance` — the engine never grades its own gates |
 
 **The discretionary middle — real code change on non-privileged paths (Stage 2, never "for sure"):**
 
 | You push… | Likely outcome |
 |---|---|
-| **Edited or added a code comment** | **Dismiss** in deterministic-only mode. difftastic parses comments as syntax-tree nodes, so a comment change is a structural change — *verified live against difftastic 0.69.0*. Only a model-corroborated Stage 2 can preserve it |
 | Changed a log message or user-facing string | Preserve *if* model says low + confidence ≥ threshold + all gates pass; otherwise dismiss |
 | Small rename / tiny refactor, no behavior intent | Same — gated preserve possible, never guaranteed |
 | Added an `import` or a dependency line anywhere in the diff | Dismiss — `noNewDependencies` gate overrides even a "low" verdict |

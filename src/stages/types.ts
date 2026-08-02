@@ -11,8 +11,15 @@ export type ReasonCode =
   | "foreign_author_commit"
   | "codeowners_path"
   | "injection_canary"
+  // A changed line carried a DIRECTIVE comment — lint suppression, build constraint, type-check
+  // suppression. Inert-looking, but it changes what the compiler/linter/type checker does.
+  | "directive_comment"
   | "hard_size_cap"
   | "ast_identical"
+  // No semantic change other than COMMENTS, and none of the changed comments carried a
+  // directive (see cfg.directiveCommentPatterns). Distinct from ast_identical because it is a
+  // materially different claim: "nothing changed" vs "only inert prose changed".
+  | "comment_only"
   | "trivial_class"
   | "merge_base_only"
   | "model_low_impact_gated"
