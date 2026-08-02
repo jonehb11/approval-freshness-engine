@@ -125,6 +125,37 @@ So the platform distinguishes "same proposal, new base" from "rewritten proposal
 inherits that distinction correctly: clean rebases keep their approval, rebases carrying unreviewed
 content are blocked.
 
+### 2.3d Merge conflict resolution — dismissed, deliberately
+
+Asked in review: should resolving a conflict keep the approval? **No**, and it is the one case
+where the answer is worth defending rather than just implementing.
+
+A conflict resolution is the opposite of a null change. The resolver picks content **neither side
+had** — which change wins, or a hybrid. That is unreviewed code by definition, and it can silently
+discard something that landed in the base branch.
+
+It also could not be caught by any of the engine's other rules, because the engine compares
+`approvedSha → head` **on the PR branch**. A resolution that drops a base-branch change leaves the
+PR's own files byte-identical to what was approved, so that diff shows *nothing*. The deletion is
+only visible against the base, which that comparison never inspects. Hence its own categorical
+Stage 0 rule.
+
+Verified live on a genuine two-parent merge (`parents: [3eb9ba0f, f31b9627]`): the PR raised a
+rate, main independently added `if (!user.verified) throw new Error("unverified")`, and the
+resolution kept the PR's rates while dropping main's guard.
+
+| Observation | Value |
+|---|---|
+| Engine verdict | **`dismiss / merge_conflict_resolution`** |
+| Merge state | **`blocked`** |
+
+**A correction, recorded because the process matters.** A first version of this drill reported the
+same scenario as *preserved*, and it was briefly written up as a critical vulnerability. That was
+wrong. The drill's `git merge` never started, so the head commit had a single parent and the
+script had merely rewritten the file with exactly the content that had been approved — preserving
+it was correct. The corrected drill leaves the merge uncommitted so the workflow completes a real
+two-parent merge, and it now asserts the parent SHAs so the shape cannot be assumed again.
+
 ### 2.4 Lifecycle and race conditions
 
 | Scenario | Result |

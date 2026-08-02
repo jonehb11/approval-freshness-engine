@@ -66,6 +66,7 @@ today: stale approval dismissed, re-review requested, merge blocked until a huma
 | A force-push that **changes content** — including a rebase that amends or adds commits | `force_push` (history since approval can't be verified) |
 | A branch where **someone other than the PR author** pushed a commit (or a commit GitHub can't attribute to a verified account) | `foreign_author_commit` |
 | A "trivial" change that is thousands of lines / dozens of files | `hard_size_cap` |
+| **Resolving a merge conflict by hand** — the resolution is code neither side had, and it can silently drop a change from the base branch | `merge_conflict_resolution` |
 | A diff whose text contains classifier-manipulation strings (prompt-injection canaries) | `injection_canary` |
 | A **directive comment** — `eslint-disable`, `@ts-ignore`, `//go:build`, `noqa`, `nolint`, `nosemgrep` | Comment-only preserves stop here: these suppress a lint, flip a build constraint, or disable type checking |
 | Any change to the engine's own control surface (workflows, ruleset, stages, prompt, echo…) in a self-governed repo | `self_governance` — the engine never grades its own gates |

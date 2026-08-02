@@ -136,6 +136,22 @@ export function stage0(delta: Delta, cfg: EngineConfig): Decision | null {
     }
   }
 
+  // 0b. Hand-resolved merge conflicts. The head is a merge commit whose outcome is not what a
+  // clean merge of its parents would produce, so a human chose content that neither side had —
+  // and that choice is unreviewed code.
+  //
+  // This has to be its own categorical rule because it is INVISIBLE to every other check. The
+  // engine reasons about approvedSha → head on the PR branch, and a resolution that DISCARDS a
+  // change from the base branch leaves the PR's own files byte-identical to what was approved.
+  // Verified live before this rule existed: a conflict resolution that silently dropped main's
+  // `if (!user.verified) throw` guard was PRESERVED as model_low_impact_gated, merge state clean.
+  // Nothing in the approved→head diff could have revealed it — the deletion is only visible
+  // against the base branch, which that diff never looks at.
+  if (delta.mergeAlteredProposal) {
+    return dismiss(0, "merge_conflict_resolution",
+      "Head is a merge commit whose result differs from a clean merge of its parents: conflicts were resolved by hand. The resolution is unreviewed code and can silently discard base-branch changes; human review required.");
+  }
+
   // 1. Force-push / rebase-with-content / base change → the classic hijack surface.
   if (delta.forcePushed) return dismiss(0, "force_push", "History was rewritten since approval.");
 

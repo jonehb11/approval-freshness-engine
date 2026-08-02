@@ -8,6 +8,10 @@ export enum Action {
 export type ReasonCode =
   | "denylist_path"
   | "force_push"
+  // The head is a MERGE commit whose result differs from what a clean merge of its two parents
+  // would have produced — i.e. conflicts were resolved by hand. That resolution is new code no
+  // one reviewed, and it can DISCARD changes from the base branch invisibly.
+  | "merge_conflict_resolution"
   | "foreign_author_commit"
   | "codeowners_path"
   | "injection_canary"
@@ -63,6 +67,17 @@ export interface Delta {
    * throw to "unsupported", and the evaluation fails CLOSED — no preserve. Only the live wiring
    * in buildDelta() populates it.
    */
+  /**
+   * True when the head is a merge commit whose outcome is NOT what a clean merge of its parents
+   * would produce — conflicts were resolved by hand. Set by buildDelta, dismissed categorically
+   * by stage 0.
+   *
+   * This cannot be inferred from the approved→head diff, which is exactly why it is carried as a
+   * flag: a conflict resolution that DISCARDS a change from the base branch leaves the PR's own
+   * files identical to what was approved, so the diff the engine would otherwise reason about
+   * shows nothing at all.
+   */
+  mergeAlteredProposal?: boolean;
   blobSource?: {
     octokit: any;
     owner: string;

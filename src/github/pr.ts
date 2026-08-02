@@ -65,9 +65,28 @@ export async function buildDelta(
   // unchanged. Everything about the identity contract is preserved: this cannot let a foreign
   // CONTENT change through, because a merge that resolved conflicts by editing the PR's files
   // produces a different own-delta and fails the equality check.
-  const updateBranchOnly = await detectUpdateBranchMerge(octokit, owner, repo, approvedSha, headSha);
+  const mergeShape = await classifyMerge(octokit, owner, repo, approvedSha, headSha);
 
-  if (updateBranchOnly) {
+  if (mergeShape === "altered") {
+    // Hand-resolved conflicts. Returned as a flagged delta rather than a preserve/dismiss here,
+    // because deciding is stage 0's job — buildDelta only reports what it observed.
+    return {
+      repo: `${owner}/${repo}`,
+      approvedSha, headSha,
+      changedFiles: files.map((f) => f.filename),
+      addedLines: files.reduce((n, f) => n + (f.additions ?? 0), 0),
+      removedLines: files.reduce((n, f) => n + (f.deletions ?? 0), 0),
+      commitAuthors: commits.map((c) => c.author?.login ?? null),
+      prAuthor: pr.user?.login ?? "",
+      forcePushed: opts.webhookForced || firstStatus === "diverged" || firstStatus === "behind",
+      baseChanged: false,
+      patchByFile: Object.fromEntries(files.map((f) => [f.filename, f.patch ?? ""])),
+      mergeAlteredProposal: true,
+      blobSource: { octokit, owner, repo },
+    };
+  }
+
+  if (mergeShape === "clean") {
     return {
       repo: `${owner}/${repo}`,
       approvedSha, headSha,
@@ -167,32 +186,40 @@ function sameOwnDelta(a: OwnDelta, b: OwnDelta): boolean {
  *
  * Any API failure returns false (evaluate normally = the stricter path). Fail closed.
  */
-async function detectUpdateBranchMerge(
+async function classifyMerge(
   octokit: Octokit, owner: string, repo: string, approvedSha: string, headSha: string,
-): Promise<boolean> {
+): Promise<"clean" | "altered" | "none"> {
   try {
     const head = await withRateLimit(() => octokit.repos.getCommit({ owner, repo, ref: headSha }));
     const parents = (head.data.parents ?? []).map((p: any) => p.sha);
-    if (parents.length !== 2) return false;
-    if (parents[0] !== approvedSha) return false;
+    if (parents.length !== 2) return "none";
 
     const baseSide = parents[1];
-    const [now, atApproval] = await Promise.all([
+    // What the PR proposes on top of the merged-in base, before and after the merge. A clean
+    // merge changes neither; a hand-resolved conflict necessarily changes one of them, because
+    // the resolver chose content that neither side had on its own.
+    const [now, before] = await Promise.all([
       withRateLimit(() => octokit.repos.compareCommitsWithBasehead({
         owner, repo, basehead: `${baseSide}...${headSha}`, per_page: 100,
       })),
       withRateLimit(() => octokit.repos.compareCommitsWithBasehead({
-        owner, repo, basehead: `${baseSide}...${approvedSha}`, per_page: 100,
+        owner, repo, basehead: `${baseSide}...${parents[0]}`, per_page: 100,
       })),
     ]);
 
     // Bail out rather than guess if either side is paginated beyond the first page: an
-    // incomplete file list could make two different deltas look equal. Fail closed.
+    // incomplete file list could make two different deltas look equal. Treat as altered — the
+    // stricter of the two answers.
     const complete = (r: any) => (r.data.files?.length ?? 0) < 100;
-    if (!complete(now) || !complete(atApproval)) return false;
+    if (!complete(now) || !complete(before)) return "altered";
 
-    return sameOwnDelta(fingerprint(now.data.files ?? []), fingerprint(atApproval.data.files ?? []));
+    const unchanged = sameOwnDelta(fingerprint(now.data.files ?? []), fingerprint(before.data.files ?? []));
+    if (!unchanged) return "altered";
+
+    // A clean merge only earns the merge_base_only preserve when the PR side is exactly what was
+    // approved; otherwise there is real PR work to evaluate alongside it.
+    return parents[0] === approvedSha ? "clean" : "none";
   } catch {
-    return false; // any uncertainty → evaluate normally (stricter)
+    return "altered"; // any uncertainty → the stricter answer
   }
 }
