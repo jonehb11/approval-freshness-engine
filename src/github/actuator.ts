@@ -14,6 +14,19 @@ export interface ActuationContext {
   octokit: Octokit;
   owner: string; repo: string;
   prNumber: number; headSha: string;
+  /**
+   * The commit the standing approval was given against, plus a factual summary of the delta
+   * since then. Used only to render the review aid below — never to decide anything.
+   *
+   * These exist because the dismiss comment promises "here is exactly what changed since the
+   * last approval" and, without them, could only print an evidence blob that is frequently null.
+   * A reviewer being asked to look again needs the DIFF SINCE THEY APPROVED, which is a link
+   * GitHub can render natively and which nothing else in the PR UI surfaces.
+   */
+  approvedSha?: string;
+  changedFiles?: string[];
+  addedLines?: number;
+  removedLines?: number;
   reviewIds: number[];       // current approving reviews to dismiss on DISMISS
   approverLogins: string[];  // to request re-review from on DISMISS
   dryRun: boolean;           // shadow mode: log only, no writes
@@ -51,7 +64,7 @@ export async function actuate(decision: Decision, ctx: ActuationContext): Promis
   if (decision.action === Action.PRESERVE) {
     await Promise.all([
       setCheck(ctx, "success", "Approval preserved: change is semantically null / low-impact.", decision),
-      comment(ctx, renderPreserveComment(decision))
+      comment(ctx, renderPreserveComment(decision, ctx))
     ]);
     return;
   }
@@ -75,7 +88,7 @@ export async function actuate(decision: Decision, ctx: ActuationContext): Promis
     })).catch(() => {/* non-fatal: reviewer may be unavailable */});
   }
 
-  await comment(ctx, renderDismissComment(decision));
+  await comment(ctx, renderDismissComment(decision, ctx));
 }
 
 /**
@@ -194,13 +207,39 @@ async function comment(ctx: ActuationContext, body: string) {
  * @param d - The PRESERVE decision.
  * @returns A formatted markdown string.
  */
-function renderPreserveComment(d: Decision): string {
+/**
+ * The single most useful thing to hand a reviewer: GitHub's own diff view scoped to
+ * approvedSha...headSha. That is precisely "what changed since you approved" — a view the PR UI
+ * does not otherwise offer, and which is usually a tiny fraction of the full PR.
+ */
+function renderDelta(ctx: ActuationContext): string {
+  if (!ctx.approvedSha) return "";
+  const compare = `https://github.com/${ctx.owner}/${ctx.repo}/compare/${ctx.approvedSha}...${ctx.headSha}`;
+  const files = ctx.changedFiles ?? [];
+  const counts = (ctx.addedLines ?? 0) + (ctx.removedLines ?? 0) > 0
+    ? ` · +${ctx.addedLines ?? 0}/-${ctx.removedLines ?? 0} lines`
+    : "";
+  const list = files.length === 0
+    ? "_No files changed — the difference is in the merge base or in file metadata._"
+    : files.slice(0, 10).map((f) => `- \`${f}\``).join("\n") +
+      (files.length > 10 ? `\n- …and ${files.length - 10} more` : "");
+  return [
+    ``,
+    `**[▶ View exactly what changed since the approval](${compare})** — ${files.length} file${files.length === 1 ? "" : "s"}${counts}`,
+    ``,
+    list,
+  ].join("\n");
+}
+
+function renderPreserveComment(d: Decision, ctx: ActuationContext): string {
   return [
     `### ✅ Approval preserved`,
     ``,
     `No re-review needed. The change since the last approval was **${d.reason.replace(/_/g, " ")}**.`,
     ``,
     `> ${d.detail}`,
+    ``,
+    renderDelta(ctx),
     ``,
     d.evidence ? `<details><summary>Evidence</summary>\n\n\`\`\`json\n${JSON.stringify(d.evidence, null, 2)}\n\`\`\`\n</details>` : "",
     ``,
@@ -216,7 +255,7 @@ function renderPreserveComment(d: Decision): string {
  * @param d - The DISMISS decision.
  * @returns A formatted markdown string.
  */
-function renderDismissComment(d: Decision): string {
+function renderDismissComment(d: Decision, ctx: ActuationContext): string {
   return [
     `### 🔄 Re-review required`,
     ``,
@@ -225,6 +264,7 @@ function renderDismissComment(d: Decision): string {
     `> ${d.detail}`,
     ``,
     `Here is exactly what changed since the last approval — you don't need to re-read the whole PR:`,
-    d.evidence ? `\n<details><summary>What changed</summary>\n\n\`\`\`json\n${JSON.stringify(d.evidence, null, 2)}\n\`\`\`\n</details>` : "",
+    renderDelta(ctx),
+    d.evidence ? `\n<details><summary>Evidence</summary>\n\n\`\`\`json\n${JSON.stringify(d.evidence, null, 2)}\n\`\`\`\n</details>` : "",
   ].join("\n");
 }

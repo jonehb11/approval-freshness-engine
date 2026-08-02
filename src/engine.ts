@@ -130,6 +130,10 @@ export async function evaluateSynchronize(input: SynchronizeInput): Promise<Sync
   await actuate(decision, {
     octokit, owner, repo, prNumber, headSha,
     reviewIds, approverLogins, dryRun,
+    // Factual delta summary for the review aid in the PR comment. Presentation only — the
+    // decision above was already made.
+    approvedSha, changedFiles: delta.changedFiles,
+    addedLines: delta.addedLines, removedLines: delta.removedLines,
   });
 
   return {
