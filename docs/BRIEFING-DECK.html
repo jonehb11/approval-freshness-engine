@@ -302,9 +302,14 @@ merge allowed  <span class="k">⇔</span>  approving reviews <span class="k">≥
     <tr><td>Approval on an older commit</td><td>Never transfers to the new commit — blocked</td><td class="m"><span class="pill p-pass">YES</span></td></tr>
     <tr><td>Model outage or nonsense verdict</td><td>Dismiss — i.e. today's behaviour</td><td class="m"><span class="pill p-warn">BY DESIGN</span></td></tr>
     <tr><td>Webhook lost during an outage</td><td>Stays blocked; <strong>not</strong> self-healing until a new push</td><td class="m"><span class="pill p-warn">KNOWN GAP</span></td></tr>
-    <tr><td>Someone deletes the ruleset</td><td><strong>The one real fail-open.</strong> Needs drift monitoring</td><td class="m"><span class="pill p-block">OPEN</span></td></tr>
+    <tr><td>An admin deletes the ruleset</td><td>Same power they always had to untick GitHub&#39;s own setting — and now held by <strong>fewer</strong> people</td><td class="m"><span class="pill p-warn">BASELINE</span></td></tr>
   </table></div>
-  <p>The last two rows are why this deck is credible: they are in it.</p>
+  <p>On that last row: enrollment does not create the power to remove staleness protection. An
+    admin could always untick GitHub&#39;s native setting. What changes is <strong>who</strong> —
+    the native box is editable by any repo admin, while the enrolled ruleset is org-level and
+    only an org owner can remove it. The one genuine caveat is procedural: because enrolling turns
+    the native box off, un-enrolling must turn it back on in the same change, or the repo is left
+    with neither control.</p>
 </section>
 
 <section class="slide" id="s10">
@@ -374,8 +379,9 @@ merge allowed  <span class="k">⇔</span>  approving reviews <span class="k">≥
       engine's own App identity. The cost is real and stated: it needs a second copy of the App
       key in Actions secrets, and an org may decline it.</li>
     <li><strong>Scale is untested.</strong> A handful of concurrent PRs, not production load.</li>
-    <li><strong>Ruleset deletion is a genuine fail-open</strong> and drift monitoring is documented
-      but not built.</li>
+    <li><strong>Drift monitoring is documented but not built.</strong> Worth having so a
+      two-switch mistake pages someone — though its absence is not a regression, since an admin
+      could always untick the native setting.</li>
     <li><strong>Lost webhooks are not replayed.</strong> Safe, but a human must push again.</li>
   </ul>
   <p class="lead">If we told you this was production-complete, you should not believe the rest of

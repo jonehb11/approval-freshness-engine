@@ -290,11 +290,25 @@ These are the places where the "every failure lands in S1 or S2" claim does not 
 or where a shipped document overstates a guarantee. They are listed here rather than softened
 into the matrix.
 
-### 4.1 CRITICAL — deleting the ruleset leaves enrolled repos *weaker* than before enrollment
+### 4.1 Deleting the ruleset — not a new attack surface, but one transition asymmetry
 
-**The one genuine fail-open input in the entire system.** If an org owner deletes, disables, or
-weakens the org ruleset, the merge gate disappears — and unlike most rollbacks, this does **not**
-return the repo to its pre-enrollment posture.
+**Corrected framing.** An earlier version of this section called ruleset deletion "the one genuine
+fail-open input in the entire system." That overstated it, and the reviewer objection that
+prompted the correction is right: **an administrator who can delete the ruleset could already have
+unchecked GitHub's native "Dismiss stale pull request approvals" before this engine existed.**
+Same privilege, same outcome — staleness protection gone. Enrollment does not create that power
+and does not hand it to anyone new.
+
+**In fact, enrollment narrows who holds it.** The native setting lives in per-repo branch
+protection and is editable by any **repo admin**. The enrolled ruleset is applied **org-level**,
+and org-level rulesets cannot be edited or weakened by repo admins — only org owners
+(`deploy/rulesets/README.md:74-75`). So enrollment moves staleness control *up* the privilege
+ladder: the set of people who can remove it gets smaller, not larger. Either way the change lands
+in the org audit log as a `repository_ruleset.*` event.
+
+**What genuinely differs, and it is narrow:** the *transition*. Because enrollment requires
+turning the native setting off, deleting the ruleset does not roll back to the pre-enrollment
+posture — it lands on **neither** control.
 
 Enrollment (README step 4.3, `README.md:20`) requires actively turning **off** GitHub's native
 "Dismiss stale pull request approvals" and "Require approval of the most recent reviewable push"
@@ -306,11 +320,11 @@ sequence is:
 3. Ruleset deleted: **neither** control is in force. The repo now allows a push onto an approved
    PR to merge with no re-review at all — strictly weaker than step 1.
 
-**Why this is not simply "org owners are trusted."** It is true that an org owner can remove any
-branch protection in any system, and that this action lands in the audit log as a
-`repository_ruleset.*` event. What makes it worth flagging is the **asymmetry**: an operator who
-deletes the ruleset intending to "roll back to normal" gets something materially less safe than
-normal, and nothing in the system tells them so. The un-enrollment procedure originally shipped
+**Why the asymmetry is still worth flagging** — not as an attack, but as an operator trap: someone
+who deletes the ruleset intending to "roll back to normal" gets something materially less safe
+than normal, and nothing in the system tells them so. That is a two-switch procedure documented as
+one, not a privilege escalation. It is fixed by procedure (below), and the residual risk after
+that fix is *identical to the pre-enrollment world*. The un-enrollment procedure originally shipped
 in `RUNBOOK.md` described removing the repo from the ruleset's target list without instructing
 the operator to restore native stale-dismissal afterwards.
 
@@ -318,9 +332,14 @@ the operator to restore native stale-dismissal afterwards.
 - ~~Amend `RUNBOOK.md` §"Manual kill switch" and §"Re-enrolling a repo"~~ **Done** — both
   sections (`RUNBOOK.md:19-33`, `:75-85`) now require pairing un-enrollment with re-enabling
   native `dismiss_stale_reviews_on_push`, and ROLLOUT-PLAN.md §1.1 carries the same two-step
-  caution. The GitHub-side risk itself remains: nothing *enforces* the pairing, so the
-  drift/detection point below still stands.
-- Treat the drift-monitoring alert as a **launch blocker**, not an operational nicety — see §4.4.
+  caution. Nothing *enforces* the pairing, so the drift-detection point below is still
+  worth having — but as an operations aid, not as a launch blocker. Without it the posture is no
+  worse than a repo whose native stale-dismissal box someone unchecked, which is the baseline
+  every GitHub org already lives with.
+- Build the drift-monitoring alert (§4.4) as a **recommended operational control**. Downgraded
+  from "launch blocker": it detects a change an org owner could already make to native branch
+  protection before this engine existed, so its absence is not a regression against the baseline.
+  It is still worth having, because it turns a silent two-switch mistake into a page.
 
 ### 4.2 CRITICAL — key leak can merge unreviewed code, because stale approvals still count
 
