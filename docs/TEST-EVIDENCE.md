@@ -114,6 +114,51 @@ confirming the hardening did not simply make the engine refuse everything.
 | Signed request with malformed JSON | `400` |
 | Signed `ping` | `200 pong` |
 
+### 2.5b Load — and the real ceiling, which is not the engine
+
+400 signed webhook deliveries fired at the deployed endpoint, built from **20 real open pull
+requests** so signature verification, App-token minting, the GitHub reads, delta construction and
+difftastic all did genuine work. `DRY_RUN=true` for the run: every read and every evaluation
+happened, no check runs were written.
+
+| Burst | Requests | Concurrency | Throughput | p50 | p95 | Max | Status |
+|---|---|---|---|---|---|---|---|
+| 1 | 50 | 10 | 7.0 req/s | 920 ms | 2462 ms | 2951 ms | all `202` |
+| 2 | 100 | 25 | 17.1 req/s | 762 ms | 2400 ms | 3478 ms | all `202` |
+| 3 (thundering herd) | 200 | 50 | **35.0 req/s** | 718 ms | 2171 ms | 3183 ms | all `202` |
+| 4 (all on ONE PR) | 50 | 50 | 32.4 req/s | 1013 ms | 1223 ms | 1541 ms | all `202` |
+
+Lambda-side, from CloudWatch: **409 invocations, 0 errors, 0 throttles**, peak concurrency 50
+(exactly the requested burst width — Lambda scaled without complaint), max duration **3329 ms**
+against a 30 s timeout. Two throttles appear in the surrounding window; they are timestamped to
+the outage drill (§2.6), where reserved concurrency was deliberately set to zero, not to this run.
+
+Burst 4 matters on its own: 50 concurrent deliveries **for the same pull request** completed with
+the tightest latency spread of any burst and no errors. Per-SHA idempotency means concurrent
+evaluations of one PR converge rather than fight.
+
+**The finding that actually governs sizing: the engine is not the bottleneck — GitHub's API rate
+limit is.** The installation ceiling here is 5,300 requests/hour. Measured consumption was ~1.9
+calls per delivery, but that is a *floor*: many of these deliveries short-circuit early (PR not
+open, or no standing approval to judge). A full evaluation costs roughly `6 + 2N` calls for an
+N-file diff — `pulls.get`, `listReviews`, the compare, plus `getCommit` and two compares for
+update-branch detection, plus two blob fetches per file for difftastic.
+
+| Diff shape | Calls per evaluation | Evaluations/hour before rate-limiting |
+|---|---|---|
+| Short-circuit (no approval yet) | ~2 | ~2,650 |
+| 1 file | ~8 | ~660 |
+| 3 files | ~12 | ~440 |
+| 10 files | ~26 | ~200 |
+
+For an org doing 1,000 PRs/day, post-approval pushes are a fraction of that and arrive nowhere
+near these ceilings. For a very large monorepo, this table — not Lambda capacity — is what to size
+against, and the mitigations are conditional requests, caching the PR/review reads, and raising
+the installation limit.
+
+**Not measured:** check-write latency and GitHub's secondary write limits (writes were disabled),
+and sustained multi-hour load. This was a burst test.
+
 ### 2.6 The outage drill — developers can self-unblock with the engine dead
 
 README step 6.4, executed end to end. This is the liveness half of the fail-safe story, and the
