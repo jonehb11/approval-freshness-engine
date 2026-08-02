@@ -78,6 +78,12 @@ export interface Delta {
    * shows nothing at all.
    */
   mergeAlteredProposal?: boolean;
+  /**
+   * Set when the merge altered the proposal but the base-side comparison could not be obtained,
+   * so no truthful delta exists to judge. Stage 0 dismisses categorically in that case — a
+   * resolution nobody can inspect is not one a classifier should be asked to bless.
+   */
+  mergeDeltaUnavailable?: boolean;
   blobSource?: {
     octokit: any;
     owner: string;

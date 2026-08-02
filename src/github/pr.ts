@@ -67,26 +67,48 @@ export async function buildDelta(
   // produces a different own-delta and fails the equality check.
   const mergeShape = await classifyMerge(octokit, owner, repo, approvedSha, headSha);
 
-  if (mergeShape === "altered") {
-    // Hand-resolved conflicts. Returned as a flagged delta rather than a preserve/dismiss here,
-    // because deciding is stage 0's job — buildDelta only reports what it observed.
+  if (mergeShape.kind === "altered") {
+    // Conflicts were resolved by hand. The delta handed onward is measured against the BASE
+    // BRANCH, not against the approved commit — see MergeShape.baseSideFiles for why the usual
+    // comparison is blind here. That makes the resolution's real effect (including anything it
+    // discarded from the base) visible to Stage 0's path rules, Stage 1, and the classifier.
+    //
+    // When the base-side comparison could not be obtained, no truthful delta exists to judge, so
+    // the flag alone stands and Stage 0 dismisses categorically.
+    const resFiles = mergeShape.baseSideFiles;
+    if (!resFiles) {
+      return {
+        repo: `${owner}/${repo}`, approvedSha, headSha,
+        changedFiles: files.map((f) => f.filename),
+        addedLines: files.reduce((n, f) => n + (f.additions ?? 0), 0),
+        removedLines: files.reduce((n, f) => n + (f.deletions ?? 0), 0),
+        commitAuthors: commits.map((c) => c.author?.login ?? null),
+        prAuthor: pr.user?.login ?? "",
+        forcePushed: opts.webhookForced || firstStatus === "diverged" || firstStatus === "behind",
+        baseChanged: false,
+        patchByFile: Object.fromEntries(files.map((f) => [f.filename, f.patch ?? ""])),
+        mergeAlteredProposal: true, mergeDeltaUnavailable: true,
+        blobSource: { octokit, owner, repo },
+      };
+    }
     return {
-      repo: `${owner}/${repo}`,
-      approvedSha, headSha,
-      changedFiles: files.map((f) => f.filename),
-      addedLines: files.reduce((n, f) => n + (f.additions ?? 0), 0),
-      removedLines: files.reduce((n, f) => n + (f.deletions ?? 0), 0),
+      repo: `${owner}/${repo}`, approvedSha, headSha,
+      changedFiles: [...new Set(resFiles.flatMap((f: any) => (
+        f.previous_filename && f.previous_filename !== f.filename ? [f.filename, f.previous_filename] : [f.filename]
+      )))],
+      addedLines: resFiles.reduce((n: number, f: any) => n + (f.additions ?? 0), 0),
+      removedLines: resFiles.reduce((n: number, f: any) => n + (f.deletions ?? 0), 0),
       commitAuthors: commits.map((c) => c.author?.login ?? null),
       prAuthor: pr.user?.login ?? "",
       forcePushed: opts.webhookForced || firstStatus === "diverged" || firstStatus === "behind",
       baseChanged: false,
-      patchByFile: Object.fromEntries(files.map((f) => [f.filename, f.patch ?? ""])),
+      patchByFile: Object.fromEntries(resFiles.map((f: any) => [f.filename, f.patch ?? ""])),
       mergeAlteredProposal: true,
       blobSource: { octokit, owner, repo },
     };
   }
 
-  if (mergeShape === "clean") {
+  if (mergeShape.kind === "clean") {
     return {
       repo: `${owner}/${repo}`,
       approvedSha, headSha,
@@ -186,13 +208,29 @@ function sameOwnDelta(a: OwnDelta, b: OwnDelta): boolean {
  *
  * Any API failure returns false (evaluate normally = the stricter path). Fail closed.
  */
+interface MergeShape {
+  kind: "clean" | "altered" | "none";
+  /**
+   * For an ALTERED merge: the PR's proposal measured against the base branch it merged
+   * (`baseSide...head`), and the files that comparison reports.
+   *
+   * This is the delta the later stages must reason about, and it is NOT the same as
+   * `approvedSha...head`. A resolution that DISCARDS a base-branch change leaves the PR's own
+   * files byte-identical to what was approved, so `approvedSha...head` shows nothing at all —
+   * the deletion only becomes visible when the comparison base is the branch that contained the
+   * discarded change. Handing the wrong one to Stage 2 would show the classifier an empty diff
+   * and invite a confident "low impact" about a change it never saw.
+   */
+  baseSideFiles?: any[];
+}
+
 async function classifyMerge(
   octokit: Octokit, owner: string, repo: string, approvedSha: string, headSha: string,
-): Promise<"clean" | "altered" | "none"> {
+): Promise<MergeShape> {
   try {
     const head = await withRateLimit(() => octokit.repos.getCommit({ owner, repo, ref: headSha }));
     const parents = (head.data.parents ?? []).map((p: any) => p.sha);
-    if (parents.length !== 2) return "none";
+    if (parents.length !== 2) return { kind: "none" };
 
     const baseSide = parents[1];
     // What the PR proposes on top of the merged-in base, before and after the merge. A clean
@@ -211,15 +249,15 @@ async function classifyMerge(
     // incomplete file list could make two different deltas look equal. Treat as altered — the
     // stricter of the two answers.
     const complete = (r: any) => (r.data.files?.length ?? 0) < 100;
-    if (!complete(now) || !complete(before)) return "altered";
+    if (!complete(now) || !complete(before)) return { kind: "altered" };
 
     const unchanged = sameOwnDelta(fingerprint(now.data.files ?? []), fingerprint(before.data.files ?? []));
-    if (!unchanged) return "altered";
+    if (!unchanged) return { kind: "altered", baseSideFiles: now.data.files ?? [] };
 
     // A clean merge only earns the merge_base_only preserve when the PR side is exactly what was
     // approved; otherwise there is real PR work to evaluate alongside it.
-    return parents[0] === approvedSha ? "clean" : "none";
+    return { kind: parents[0] === approvedSha ? "clean" : "none" };
   } catch {
-    return "altered"; // any uncertainty → the stricter answer
+    return { kind: "altered" }; // any uncertainty → the stricter answer, with no usable delta
   }
 }

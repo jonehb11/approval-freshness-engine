@@ -147,9 +147,14 @@ export function stage0(delta: Delta, cfg: EngineConfig): Decision | null {
   // `if (!user.verified) throw` guard was PRESERVED as model_low_impact_gated, merge state clean.
   // Nothing in the approved→head diff could have revealed it — the deletion is only visible
   // against the base branch, which that diff never looks at.
-  if (delta.mergeAlteredProposal) {
+  // Only when the resolution cannot be INSPECTED. When it can, buildDelta re-bases the delta onto
+  // the base branch so the resolution's real effect — including anything it discarded — is
+  // visible, and the change is judged on its merits by the rest of the ladder like any other.
+  // A resolution that drops a security guard shows up there as a deletion and is dismissed on
+  // content; a resolution that merely takes both sides of an import list reads as trivial.
+  if (delta.mergeAlteredProposal && delta.mergeDeltaUnavailable) {
     return dismiss(0, "merge_conflict_resolution",
-      "Head is a merge commit whose result differs from a clean merge of its parents: conflicts were resolved by hand. The resolution is unreviewed code and can silently discard base-branch changes; human review required.");
+      "Head is a merge commit whose result differs from a clean merge of its parents, and the base-side comparison needed to inspect the resolution could not be obtained; human review required.");
   }
 
   // 1. Force-push / rebase-with-content / base change → the classic hijack surface.

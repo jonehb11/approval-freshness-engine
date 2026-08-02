@@ -26,23 +26,35 @@ function delta(over: Partial<Delta> = {}): Delta {
   };
 }
 
-describe("hand-resolved merge conflicts are dismissed categorically", () => {
-  it("dismisses when the merge altered the proposal", () => {
-    const d = stage0(delta({ mergeAlteredProposal: true }), testConfig());
+describe("hand-resolved merge conflicts", () => {
+  it("dismisses categorically when the resolution cannot be inspected", () => {
+    // No base-side comparison → no truthful delta exists. A resolution nobody can inspect is not
+    // one a classifier should be asked to bless.
+    const d = stage0(delta({ mergeAlteredProposal: true, mergeDeltaUnavailable: true }), testConfig());
     expect(d?.action).toBe(Action.DISMISS);
     expect(d?.reason).toBe("merge_conflict_resolution");
   });
 
-  it("dismisses even when the PR's own files look unchanged since approval", () => {
-    // The exact live shape: the resolution dropped a base-branch guard, so nothing in the
-    // approved→head diff for the PR's files reveals it.
-    const d = stage0(delta({ mergeAlteredProposal: true, changedFiles: [], patchByFile: {}, addedLines: 0, removedLines: 0 }), testConfig());
+  it("dismisses uninspectable resolutions ahead of the force-push rule, so the reason is specific", () => {
+    const d = stage0(delta({ mergeAlteredProposal: true, mergeDeltaUnavailable: true, forcePushed: true }), testConfig());
     expect(d?.reason).toBe("merge_conflict_resolution");
   });
 
-  it("dismisses ahead of the force-push rule, so the reason is specific", () => {
-    const d = stage0(delta({ mergeAlteredProposal: true, forcePushed: true }), testConfig());
-    expect(d?.reason).toBe("merge_conflict_resolution");
+  it("lets an INSPECTABLE resolution through stage 0 to be judged on its content", () => {
+    // buildDelta re-bases the delta onto the base branch for these, so the resolution's real
+    // effect is visible to the rest of the ladder rather than being pre-judged here.
+    expect(stage0(delta({ mergeAlteredProposal: true }), testConfig())).toBeNull();
+  });
+
+  it("still applies the path rules to an inspectable resolution", () => {
+    // The re-based delta feeds the denylist like any other: a resolution touching a privileged
+    // path is dismissed on the path, not on the fact that it was a merge.
+    const d = stage0(delta({
+      mergeAlteredProposal: true,
+      changedFiles: [".github/workflows/ci.yml"],
+      patchByFile: { ".github/workflows/ci.yml": "+  run: curl evil\n" },
+    }), testConfig());
+    expect(d?.reason).toBe("denylist_path");
   });
 
   it("does not fire for a clean update-branch merge", () => {

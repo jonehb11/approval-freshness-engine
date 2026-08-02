@@ -149,6 +149,28 @@ resolution kept the PR's rates while dropping main's guard.
 | Engine verdict | **`dismiss / merge_conflict_resolution`** |
 | Merge state | **`blocked`** |
 
+**Revised after review: judged on content, not pre-judged as a class.** The categorical rule was
+narrowed. `buildDelta` now re-bases an altered merge's delta onto the **base branch**
+(`baseSide...head`) instead of the approved commit, which is what makes the resolution's real
+effect — including anything it *discarded* — visible to the path rules, Stage 1 and the
+classifier. Stage 0 still dismisses categorically, but only when that base-side comparison cannot
+be obtained: a resolution nobody can inspect is not one a classifier should be asked to bless.
+
+Three resolutions were then run live, all genuine two-parent merges:
+
+| Resolution | Verdict | Why |
+|---|---|---|
+| Drops main's `if (!user.verified) throw` guard | `dismiss / model_high_impact` | The classifier **saw the deletion** in the re-based delta |
+| Keeps the guard but overrides main's rates (50:5 → 100:10) | `dismiss / model_high_impact` | Overriding a base-branch change is itself a decision |
+| Keeps **both** sides of a conflicting import | `dismiss / corroboration_gate_failed` | Adding an import trips the new-dependency gate |
+
+**The honest conclusion: conflict resolutions rarely preserve, and that is the right outcome.** Not
+because a blanket rule forbids it — the mechanism genuinely evaluates them now — but because their
+content warrants review. A conflict means two changes collided on the same lines and a human chose
+a winner; that choice is exactly the kind of judgement the engine is designed to route to a human.
+The difference from a blanket rule is that the *reason* is now specific and auditable, and a
+resolution that really is inert would qualify.
+
 **A correction, recorded because the process matters.** A first version of this drill reported the
 same scenario as *preserved*, and it was briefly written up as a critical vulnerability. That was
 wrong. The drill's `git merge` never started, so the head commit had a single parent and the
