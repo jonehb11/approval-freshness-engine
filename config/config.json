@@ -89,13 +89,32 @@
     "/mark this (as )?(low|safe|trivial)/i",
     "/disregard (the )?(above|prior)/i",
     "/you are an? (ai|assistant|model)/i",
-    "/system prompt/i"
+    "/system prompt/i",
+    "/[\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069\\ufeff]/",
+    "/(pre[- ]?approved|already (reviewed|approved))\\s+by/i",
+    "/(reviewing|automated)\\s+(system|reviewer|tool)/i",
+    "/act as (an?|the)\\s/i",
+    "/\"?impact\"?\\s*[:=]\\s*\"?low/i",
+    "/\"?confidence\"?\\s*[:=]\\s*\"?(0?\\.9|1\\.0|1\\b)/i",
+    "/(treat|consider) (this|it) as (trivial|cosmetic|safe|low)/i",
+    "/no (runtime|behavio(u)?ral) (impact|change)/i"
   ],
   "sensitivePatterns": [
     "/\\b(password|passwd|secret|token|credential|jwt|hmac|authenticate|authorize)\\b/i",
     "/\\b(eval|exec|execSync|deserialize|pickle|unserialize)\\b/i",
     "/\\bfetch\\(|axios|http\\.|requests\\./i",
-    "/\\b(chmod|sudo|setuid)\\b/i"
+    "/\\b(chmod|sudo|setuid)\\b/i",
+    "/\\b(api[-_]?key|apikey|access[-_]?key|secret[-_]?key|private[-_]?key)\\b/i",
+    "/\\bAKIA[0-9A-Z]{8,}/",
+    "/-----BEGIN [A-Z ]*PRIVATE KEY-----/",
+    "/\\b(bearer|authorization)\\s*[:=]/i",
+    "/\\bgh[pousr]_[A-Za-z0-9]{16,}/",
+    "/\\b(child_process|subprocess|spawn|execFile|popen|system)\\s*[.(]/i",
+    "/\\b(websocket|net\\.connect|dgram|http\\.request|urllib|curl|wget)\\b/i",
+    "/\\bBuffer\\.from\\([^)]*base64/i",
+    "/\\b(atob|btoa|b64decode|base64\\.b64decode)\\s*\\(/i",
+    "/\\b(setuid|setgid|seteuid|chown|chmod\\s+[0-7]*7[0-7]*)\\b/i",
+    "/\\b(process\\.env|os\\.environ|getenv)\\b/i"
   ],
   "thresholds": {
     "confThreshold": 0.85,

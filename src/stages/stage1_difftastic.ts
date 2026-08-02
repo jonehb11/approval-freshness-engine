@@ -64,7 +64,21 @@ export async function stage1(delta: Delta, cfg: EngineConfig): Promise<Decision 
   // (b) AST-identical check: run difftastic structurally over each changed file's patch.
   //     If difftastic reports zero structural changes across ALL files → whitespace/format/
   //     comment-only → preserve.
-  let allStructurallyIdentical = delta.changedFiles.length > 0;
+  // A file GitHub reports as changed while its CONTENT is byte-identical changed something we
+  // cannot see in a diff: the file mode (chmod +x on a script), or a rename. Both are meaningful —
+  // making a file executable is a real change — and both would otherwise sail through as
+  // `ast_identical`, because difftastic compares content and would correctly find none.
+  //
+  // `metadataOnlyChange` marks that case so it cannot earn a deterministic preserve. It is
+  // detected as "reported changed, but zero added and zero removed lines across the whole delta",
+  // which is exactly the shape a mode/rename-only change produces.
+  const metadataOnlyChange =
+    delta.changedFiles.length > 0 && delta.addedLines === 0 && delta.removedLines === 0;
+  if (metadataOnlyChange) {
+    console.log(`[stage1] metadata-only change (mode or rename) on ${delta.changedFiles.length} file(s); not eligible for ast_identical`);
+  }
+
+  let allStructurallyIdentical = delta.changedFiles.length > 0 && !metadataOnlyChange;
   const reports: Record<string, string> = {};
   
   const results = [];
@@ -102,7 +116,11 @@ export async function stage1(delta: Delta, cfg: EngineConfig): Promise<Decision 
   }
 
   // (c) Trivial-class-only: every changed file is in an allowlisted trivial class.
-  if (delta.changedFiles.length > 0 && delta.changedFiles.every((f) => isTrivialClass(f, delta, cfg))) {
+  // The trivial classes judge a file's CONTENT class ("this is documentation"), so they must not
+  // absolve a change that isn't content at all — a mode flip or a rename carries no diff for the
+  // class to be trivial about.
+  if (!metadataOnlyChange &&
+      delta.changedFiles.length > 0 && delta.changedFiles.every((f) => isTrivialClass(f, delta, cfg))) {
     return preserve(1, "trivial_class",
       "All changes are in allowlisted trivial classes (docs / bot-only lockfiles / deterministic generated).",
       { files: delta.changedFiles });

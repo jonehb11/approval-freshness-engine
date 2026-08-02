@@ -89,7 +89,17 @@ export async function buildDelta(
   return {
     repo: `${owner}/${repo}`,
     approvedSha, headSha,
-    changedFiles: files.map((f) => f.filename),
+    // BOTH sides of a rename. GitHub reports a renamed file once, with `filename` set to the NEW
+    // path and `previous_filename` to the old one. Reading only `filename` meant a privileged file
+    // could be renamed OUT of its protected path — `.github/workflows/ci.yml` → `docs/old.txt` —
+    // and the denylist would only ever see the harmless destination, so deleting a CI job by
+    // moving it away could be preserved. Both paths are evaluated, so a rename is privileged if
+    // EITHER end of it is.
+    changedFiles: [...new Set(files.flatMap((f) => (
+      f.previous_filename && f.previous_filename !== f.filename
+        ? [f.filename, f.previous_filename]
+        : [f.filename]
+    )))],
     addedLines: files.reduce((n, f) => n + (f.additions ?? 0), 0),
     removedLines: files.reduce((n, f) => n + (f.deletions ?? 0), 0),
     // SECURITY: identity is ONLY the GitHub-resolved account login (c.author.login). We never
