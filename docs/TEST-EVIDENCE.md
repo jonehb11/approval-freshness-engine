@@ -102,9 +102,10 @@ work against a real `.GitHub/Workflows/` path.
 
 ### 3.0 Summary
 
-Ten defects were found by testing against a live deployment. **Three were confirmed live as real
-preserves of dangerous content** — that is, a change that should have required human review kept
-its approval and became mergeable. All ten are fixed, with regression tests.
+Fourteen defects were found by testing against a live deployment. **Four were confirmed live as
+real preserves of dangerous content** — a change that should have required human review kept its
+approval and became mergeable. All fourteen are fixed, each with a regression test, each
+re-verified live where the environment allowed. The unit suite grew from 141 to 278 tests.
 
 | # | Defect | Impact before fix | Severity |
 |---|---|---|---|
@@ -118,11 +119,28 @@ its approval and became mergeable. All ten are fixed, with regression tests.
 | 8 | Secret-bearing filenames matched the `*.txt` doc class | `secrets.txt` would have been preserved as "documentation" | High |
 | 9 | Stage 2 gates passed vacuously on an invisible diff | GitHub omits `patch` for binary/oversized files; with nothing to inspect, every content gate passed and an unseen change could be preserved | High |
 | 10 | Classifier judged a truncated diff | A payload placed past `maxInputChars` was never shown to the model, which still returned a confident verdict on the prefix | High |
+| 11 | Only the destination of a rename was judged | **Verified live.** GitHub reports a rename once, with `filename` = destination. A privileged file could be renamed OUT of its protected path (`.github/workflows/ci.yml` → `docs/old.txt`) and the denylist saw only the harmless destination — deleting a CI job by moving it away was preservable | **High (live bypass)** |
+| 12 | Mode-only changes earned `ast_identical` | `chmod +x` reports zero added and zero removed lines; difftastic correctly found the content identical, so making a file executable kept its approval | High |
+| 13 | Sensitive-pattern gate caught 1 of 8 probes | An added API key, AWS access key, bearer token, GitHub token, process spawn, subprocess call, outbound socket or base64 decode did **not** veto a "low impact" verdict | High |
+| 14 | Canaries missed the Trojan Source class | Zero-width, bidi-override and BOM characters (CVE-2021-42574) — text that renders one way to a human and compiles another — passed uninspected | Medium |
 
-Defects 4–10 share one root cause worth naming: **every one of them was a gate that returned
-"safe" because it had nothing to look at, or was looking in the wrong place.** Empty lists, empty
-patches, truncated input, and path patterns anchored one directory too tightly all fail *open* by
-default. The fixes make each of them fail closed explicitly.
+Defects 4–14 share one root cause worth naming: **every one was a gate that returned "safe"
+because it had nothing to look at, or was looking in the wrong place.** Empty lists, empty
+patches, truncated input, a rename's far end, a change with no lines in it, and path patterns
+anchored one directory too tightly all fail *open* by default. Absence of evidence was reading as
+evidence of absence. The fixes make each of them fail closed explicitly.
+
+**The measured effect of that hardening**, against probe sets written to evade each gate:
+
+| Gate | Coverage before | Coverage after |
+|---|---|---|
+| Stage 2 sensitive patterns | 1 of 8 evasion probes caught | **8 of 8** |
+| Stage 0 injection canaries | 2 of 10 | **7 of 10** |
+| difftastic false-identical | (untested) | **0 of 10 adversarial edits slipped** |
+
+The three canary probes still not caught — spaced-out text, homoglyphs, base64 — are stated
+rather than hidden. The canaries are defence in depth: live, the model itself refused a
+canary-free persuasion attempt that carried a backdoor.
 
 ### 3.1 `--display json` silently disabled the entire deterministic preserve path
 
