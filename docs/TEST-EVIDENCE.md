@@ -92,6 +92,39 @@ confirming the hardening did not simply make the engine refuse everything.
 | CONTROL: clean local rename | **preserved** | `model_low_impact_gated` |
 | CONTROL: formatting-only reflow | **preserved** | `model_low_impact_gated` |
 
+### 2.3c Rebases — preserved when clean, blocked when they smuggle
+
+Asked in review: "will a rebase also be preserved?" The answer turns on a GitHub platform
+behaviour that is worth documenting, because the design's safety depends on it and it is not
+obvious.
+
+**When a force-push leaves the diff unchanged, GitHub re-points the existing review's
+`commit_id` to the new head commit.** Measured directly:
+
+| Moment | `review.commit_id` |
+|---|---|
+| Immediately after approval | `a6af51e0` — the reviewed commit |
+| After `git rebase origin/main` + force-push, content unchanged | **`11b8cd81`** — moved to the new head |
+
+The approval travels with the rebase, so the engine's `approvedSha` equals the head, the delta is
+empty, and the verdict is `preserve / merge_base_only`. Merge state `clean`.
+
+**When the force-push changes content, GitHub does NOT re-point it** — and that is what makes the
+above safe rather than alarming. Verified adversarially: a rebase that also amended
+`isAdmin()` to `return true`, smuggling an authorisation bypass into the same force-push:
+
+| Observation | Value |
+|---|---|
+| Approved head | `5508818c` |
+| Head after rebase + amend | `0f6f3896` |
+| `review.commit_id` afterwards | **`5508818c`** — stayed on the reviewed commit |
+| Engine verdict | **`dismiss / force_push`** |
+| Merge state | **`blocked`** |
+
+So the platform distinguishes "same proposal, new base" from "rewritten proposal", and the engine
+inherits that distinction correctly: clean rebases keep their approval, rebases carrying unreviewed
+content are blocked.
+
 ### 2.4 Lifecycle and race conditions
 
 | Scenario | Result |

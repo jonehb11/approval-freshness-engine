@@ -54,6 +54,7 @@ today: stale approval dismissed, re-review requested, merge blocked until a huma
 | Added, reworded or removed a **code comment** | Stage 1 `comment_only` → preserve (difftastic runs with `--ignore-comments`) |
 | Edited `docs/**` or any `*.md` only | Stage 1 `trivial_class` (docs) → preserve |
 | Clicked **Update branch** — no conflicts, your PR's own files untouched | Stage 1 `merge_base_only` → preserve¹ |
+| **Rebased onto an updated base** with no content change (`git rebase origin/main`, force-push) | Stage 1 `merge_base_only` → preserve² |
 | Re-generated a deterministic artifact on an allowlisted `generated` glob | Stage 1 `trivial_class` → preserve |
 | Bot-authored PR (e.g. Renovate as PR author) updates only its own allowlisted lockfile | Stage 1 `trivial_class` (lockfiles) → preserve |
 
@@ -62,7 +63,7 @@ today: stale approval dismissed, re-review requested, merge blocked until a huma
 | You push… | Why it dismisses |
 |---|---|
 | *Any* edit — even one character — to a privileged path: `*.tf`, `**/prod/**`, `.github/workflows/**`, IAM/policy files, dependency manifests, CODEOWNERS-governed paths | `denylist_path` / `codeowners_path` |
-| A force-push or rebase — even if the content ends up identical | `force_push` (history since approval can't be verified) |
+| A force-push that **changes content** — including a rebase that amends or adds commits | `force_push` (history since approval can't be verified) |
 | A branch where **someone other than the PR author** pushed a commit (or a commit GitHub can't attribute to a verified account) | `foreign_author_commit` |
 | A "trivial" change that is thousands of lines / dozens of files | `hard_size_cap` |
 | A diff whose text contains classifier-manipulation strings (prompt-injection canaries) | `injection_canary` |
@@ -102,6 +103,13 @@ this is exactly the re-review native GitHub would have demanded.
 **Walkthrough — a push the AI never sees.** Dana's approved PR adds one line to
 `.github/workflows/ci.yaml`. Stage 0 dismisses instantly (`denylist_path`): privileged surfaces
 categorically require fresh human review, regardless of size or what any model thinks.
+
+² Rebases work because of a GitHub behaviour worth knowing: when a force-push leaves the diff
+**unchanged**, GitHub re-points the existing review's `commit_id` to the new head, so the approval
+travels with the rebase. When the force-push **does** change content, `commit_id` stays on the
+original commit, the compare diverges, and Stage 0 dismisses with `force_push`. Both halves were
+verified live — including an adversarial rebase that amended `isAdmin` to `return true`, which was
+correctly **blocked** (docs/TEST-EVIDENCE.md).
 
 ¹ Build honesty: the `merge_base_only` bucket has a known implementation caveat in the current
 scaffold (the three-dot compare in `src/github/pr.ts` — see FAILURE-MODES.md §4.5) that must be
